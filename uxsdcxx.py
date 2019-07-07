@@ -21,6 +21,7 @@ from xmlschema.validators import (
     XsdUnion
 )
 
+from itertools import chain
 # Note that Python type annotations are just annotations and
 # have no runtime effects. But they are useful for documentation.
 from typing import List, Tuple, Dict, Set, Union
@@ -82,9 +83,9 @@ cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "
 			"thread_local", "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
 			"virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq"]
 
-schema = xmlschema.XMLSchema("fpga_architecture.xsd")
+schema = xmlschema.validators.XMLSchema11("rr_graph.xsd")
 
-# Complex types found inside elements. They are not found in the global map,
+# Complex types found inside ". They are not found in the global map,
 # so we have to reserve them while traversing types in the global map
 # and generate them afterwards.
 anonymous_complex_types = set()
@@ -122,34 +123,13 @@ def to_union_member_type(x: str) -> str:
 def indent(x: str, n: int=1) -> str:
 	return "\n".join(["\t"*n + line for line in x.split("\n") if line])
 
-# Return count of child types. This is used to lower single-element structs
-# to typedefs and lower unique_ptrs to typedefs to flat members.
-def count_child_types(t, visited=None) -> int:
-	if visited is None: visited = {} # A wart of Python. https://docs.python-guide.org/writing/gotchas/
-	if visited.get(t): return 0
-	visited[t] = True
-	out = 0
-	if isinstance(t, XsdComplexType):
-		out += len(t.attributes)
-		out += count_child_types(t.content_type, visited)
-	elif isinstance(t, XsdGroup):
-		for e in t._group:
-			out += count_child_types(e, visited)
-	elif isinstance(t, XsdSimpleType) or isinstance(t, XsdElement):
-		out = 1
-	else:
-		raise NotImplementedError("I don't know how to count %s." % t)
-	return out
-
 #
 
 # We can put a "cpp_name" annotation on elements because they have actual names.
 # In comparison, complex_types only have type names. A complex_type could have
-# different names if put in different structs.
-def anno_type_element(t: XsdElement, visited=None, many=False):
-	if visited is None: visited = {}
-	if visited.get(t): return
-	visited[t] = True
+# different C++ names in different contexts.
+def anno_type_element(t: XsdElement, many=False):
+	if getattr(t, "cpp_type", None) is not None: return
 
 	if t.occurs[1] is None or t.occurs[1] > 1: many = True
 	if not t.type.name:
@@ -157,7 +137,7 @@ def anno_type_element(t: XsdElement, visited=None, many=False):
 		anonymous_complex_types.add(t.type)
 
 	if isinstance(t.type, XsdComplexType):
-		anno_type_complex_type(t.type, visited)
+		anno_type_complex_type(t.type)
 		# We have a recursive type and anno_typedecl_complex_type did nothing.
 		if not getattr(t.type, "cpp_type", None): return
 	else:
@@ -166,21 +146,20 @@ def anno_type_element(t: XsdElement, visited=None, many=False):
 	if many:
 		t.cpp_type = "std::vector<%s>" % t.type.cpp_type
 		t.cpp_name = "%s_list" % t.name
-	else:
+	elif isinstance(t.type, XsdComplexType):
 		t.cpp_type = "std::unique_ptr<%s>" % t.type.cpp_type
 		t.cpp_name = "%s" % _(t.name)
+	else:
+		t.cpp_type = "%s" % t.type.cpp_type
+		t.cpp_name = "%s" % _(t.name)
 
-def anno_type_group(t: XsdGroup, visited=None, many=False):
-	if visited is None: visited = {}
-	if visited.get(t): return
-	visited[t] = True
-
+def anno_type_group(t: XsdGroup, many=False):
 	if t.occurs[1] is None or t.occurs[1] > 1: many = True
 	for e in t._group:
 		if isinstance(e, XsdGroup):
-			anno_type_group(e, visited, many)
+			anno_type_group(e, many)
 		elif isinstance(e, XsdElement):
-			anno_type_element(e, visited, many)
+			anno_type_element(e, many)
 		else:
 			raise NotImplementedError("I don't know what to do with group member %s." % e)
 
@@ -215,18 +194,24 @@ def anno_type_simple_type(t: XsdSimpleType):
 	else:
 		raise NotImplementedError("I don't know what to do with type %s." % t)
 
-def anno_type_complex_type(t: XsdComplexType, visited=None):
-	if visited is None: visited = {}
-	if visited.get(t): return
-	visited[t] = True
+def anno_type_complex_type(t: XsdComplexType):
+	if getattr(t, "cpp_type", None) is not None: return
+	t.cpp_type = to_cpp_type(t.name)
+
 	for attr in t.attributes.values():
 		anno_type_simple_type(attr.type)
+
+	t.group_dfas = []
 	if isinstance(t.content_type, XsdGroup):
 		if len(t.content_type._group) > 0:
-			anno_type_group(t.content_type, visited)
+			assert t.content_type.model != "any", "<xs:any> is not supported."
+			anno_type_group(t.content_type)
+			if t.content_type.model == "all":
+				t.group_dfas = [dfa_from_group(x) for x in t.content_type._group]
+			else:
+				t.group_dfas = [dfa_from_group(t.content_type)]
 	else:
 		anno_type_simple_type(t.content_type)
-	t.cpp_type = to_cpp_type(t.name)
 
 #
 
@@ -270,6 +255,19 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 	out = "struct %s {\n" % t.cpp_type + indent(out) + "\n};\n"
 	return out
 
+# Generates a string->enum function.
+def lexer_from_enum(t: XsdAtomicRestriction) -> str:
+	assert t.cpp_type.startswith("enum")
+	out = ""
+	out += "%s lex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type[5:])
+	for i, a in enumerate(t.validators[0].enumeration):
+		out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
+		out += "\t\treturn %s::%s;\n" % (t.cpp_type, to_enum_token(a))
+		out += "\t}\n"
+	out += "\telse throw std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
+	out += "}\n"
+	return out
+
 # Annotate the schema with cpp_types of every complex and simple type.
 # Put aside anonymous complex types, enums and unions for generating actual type declaration.
 for t in types:
@@ -301,6 +299,10 @@ element_definitions = ""
 for e in elements:
 	element_definitions += "%s %s;\n" % (e.cpp_type, e.cpp_name)
 
+enum_lexers = ""
+for e in enums:
+	enum_lexers += lexer_from_enum(e) + "\n"
+
 # Put the types found so far in unions in an enum. This is our tag enum.
 type_tag_definition = "enum class type_tag {%s};\n" % ", ".join(set([to_enum_token(t.cpp_type) for t in simple_types]))
 
@@ -308,6 +310,7 @@ fn_declarations = ""
 for t in types:
 	fn_declarations += "void read_%s(pugi::xml_node &root, %s &out);\n" % (t.cpp_type, t.cpp_type)
 
+print("#include <bitset>")
 print("#include <cstring>")
 print("#include <memory>")
 print("#include <string>")
@@ -317,50 +320,14 @@ print("#include \"pugixml.hpp\"")
 print("")
 if struct_declarations: print(struct_declarations)
 if enum_definitions: print(enum_definitions)
+if enum_lexers: print(enum_lexers)
 if simple_types: print(type_tag_definition)
 if union_definitions: print(union_definitions)
 if struct_definitions: print(struct_definitions)
 if element_definitions: print(element_definitions)
-if fn_declarations: print(fn_declarations, end="")
+if fn_declarations: print(fn_declarations , end="")
 
 #
-
-def _gen_load_simple(t: XsdSimpleType, container: str, input: str="node.child_value()") -> str:
-	out = ""
-	if t.cpp_type.startswith("std::vector"):
-		out += "std::string raw, word;\n"
-		out += "raw = %s;\n" % input
-		out += "while(raw >> word){\n" % input
-		out += "\t%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.base_type.name] % "word")
-		out += "}\n"
-	else:
-		out += "%s = %s;\n" % (container, atomic_builtin_load_formats[t.name] % input)
-	return out
-
-def _gen_load_element_complex(t: XsdElement, parent: str="") -> str:
-	out = ""
-	container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
-	if t.cpp_type.startswith("std::vector"):
-		out += "%s tmp;\n" % t.type.cpp_type
-		out += "%s.push_back(tmp);\n" % container
-		out += "read_%s(node, %s.back());\n" % (t.type.cpp_type, container)
-	elif t.cpp_type.startswith("std::unique_ptr"):
-		out += "%s = %s(new %s);\n" % (container, t.cpp_type, t.type.cpp_type)
-		out += "read_%s(node, *%s);\n" % (t.type.cpp_type, container)
-	else:
-		raise ValueError("It should be impossible for an Element to have type %s." % t.cpp_type)
-	return out
-
-def _gen_load_element(t: XsdElement, parent: str="") -> str:
-	if isinstance(t.type, XsdComplexType):
-		return _gen_load_element_complex(t, parent)
-	elif isinstance(t.type, XsdAtomicBuiltin):
-		container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
-		if t.cpp_type.startswith("std::vector"):
-			return "%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
-		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
-	else:
-		raise NotImplementedError("%s?" % t.type)
 
 def gen_init_fn() -> str:
 	out = """
@@ -382,50 +349,203 @@ void read(const char *filename){
 	out += "}\n"
 	return out
 
-def _gen_load_group(t: XsdGroup) -> str:
-	dfa = dfa_from_group(t)
-	out = """
-pugi::xml_node node = root.first_child();
-const char *in = node.name();
-int state = %s;
-while(1){
-	switch(state){
-""" % dfa["start"]
-	for s in dfa["states"]:
-		out += "\tcase %d:\n" % s
-		for i, (inp, next) in enumerate(dfa["transitions"][s].items()):
-			out += "\t\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", inp)
-			out += "\t\t\tstate = %d;\n" % next
-			out += indent(_gen_load_element(dfa["elements"][inp], "out"), 3) + "\n"
-			out += "\t\t}\n"
-		if s in dfa["accepts"]:
-			out += "\t\telse if(strcmp(in, \"end of input\") == 0){\n"
-			out += "\t\t\tgoto accept;\n"
-			out += "\t\t}\n"
-		expected_inputs = ["<%s>" % x for x in dfa["transitions"][s].keys()]
-		if s in dfa["accepts"]: expected_inputs.append("end of input")
-		out += "\t\telse throw std::runtime_error(\"expected %s, found \" + std::string(in));\n" % " or ".join(expected_inputs)
-		out += "\t\tbreak;\n"
-		out += "\t}\n"
+def _gen_load_simple(t: XsdSimpleType, container: str, input: str="node.child_value()") -> str:
+	out = ""
+	if t.cpp_type.startswith("std::vector"):
+		out += "std::string raw, word;\n"
+		out += "raw = %s;\n" % input
+		out += "while(raw >> word){\n" % input
+		out += "\t%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.base_type.name] % "word")
+		out += "}\n"
+	elif t.cpp_type.startswith("enum"):
+		out += "%s = lex_%s(%s);\n" % (container, t.cpp_type[5:], input) # "enum_A"[5:] == A
+	else:
+		out += "%s = %s;\n" % (container, atomic_builtin_load_formats[t.name] % input)
+	return out
 
-	out += "\tnode = node.next_sibling();\n"
-	out += "\tif(node) in = node.name();\n"
-	out += "\telse in = \"end of input\";\n"
+def _gen_load_element_complex(t: XsdElement, parent: str="") -> str:
+	out = ""
+	container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
+	if t.cpp_type.startswith("std::vector"):
+		out += "%s.push_back(%s());\n" % (container, t.type.cpp_type)
+		out += "read_%s(node, %s.back());\n" % (t.type.cpp_type, container)
+	elif t.cpp_type.startswith("std::unique_ptr"):
+		out += "%s = %s(new %s);\n" % (container, t.cpp_type, t.type.cpp_type)
+		out += "read_%s(node, *%s);\n" % (t.type.cpp_type, container)
+	else:
+		raise ValueError("It should be impossible for an XsdElement with a complex type to have C++ type %s." % t.cpp_type)
+	return out
+
+def _gen_load_element(t: XsdElement, parent: str="") -> str:
+	if isinstance(t.type, XsdComplexType):
+		return _gen_load_element_complex(t, parent)
+	elif isinstance(t.type, XsdAtomicBuiltin):
+		container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
+		if t.cpp_type.startswith("std::vector"):
+			return "%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
+		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
+	else:
+		raise NotImplementedError("%s?" % t.type)
+
+#
+
+# Hacky and brittle. The many-dfa implementation will be scrapped once again...
+def _gen_load_group(t: XsdGroup) -> str:
+	out = ""
+	out += "int next, %s;\n" % ", ".join(["state%d = %s" % (i, dfa.start) for i, dfa in enumerate(t.group_dfas)])
+	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
+	for i, dfa in enumerate(t.group_dfas):
+		out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
+		out += "\tnext = gstates%d_%s[state%d][(int)in];\n" % (i, t.cpp_type, i)
+		out += "\tif(next == -1) dfa_error(gtok_lookup_%s[(int)in], gstates%d_%s[state%d], gtok_lookup_%s, %d);\n"  % (t.cpp_type, i, t.cpp_type, i, t.cpp_type, len(dfa.alphabet))
+		out += "\tstate%d = next;\n" % i
+
+	elements = list(chain(*[dfa.elements.items() for dfa in t.group_dfas]))
+	out += "\tswitch(in){\n";
+	for inp, el in elements:
+		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(inp))
+		out += indent(_gen_load_element(el, "out"), 2) + "\n"
+		out += "\t\tbreak;\n"
+	out += "\t}\n";
+
+	x = [" && ".join(["state%d != %s" % (i, x) for x in dfa.accepts]) for i, dfa in enumerate(t.group_dfas)]
+	reject_cond = " || ".join(["(%s)" % cond for cond in x])
 	out += "}\n"
+	out += "if(%s) dfa_error(\"end of input\", gstates0_%s[state0], gtok_lookup_%s, %d);\n" % (reject_cond, t.cpp_type, t.cpp_type, len(dfa.alphabet))
+	return out
+
+def _gen_load_attrs(t: XsdGroup) -> str:
+	out = ""
+	N = len(t.attributes.values())
+	out += "std::bitset<%d> astate = 0;\n" % N
+	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
+	out += "\tatok_%s in = alex_%s(attr.name());\n" % (t.cpp_type, t.cpp_type)
+	out += "\tif(astate[(int)in] == 0) astate[(int)in] = 1;\n"
+	out += "\telse throw std::runtime_error(\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\");\n" % t.name
+
+	out += "\tswitch(in){\n";
+	for attr in t.attributes.values():
+		out += "\tcase atok_%s::%s:\n" % (t.cpp_type, to_enum_token(attr.name))
+		out += indent(_gen_load_simple(attr.type, "out.%s" % attr.name, "attr.value()"), 2) + "\n"
+		out += "\t\tbreak;\n"
+	out += "\t}\n";
+	out += "}\n"
+
+	mask = "".join(["1" if x.use == "optional" else "0" for x in t.attributes.values()][::-1])
+	out += "std::bitset<%d> test_state = astate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
+	out += "if(!test_state.all()) attr_error(test_state, atok_lookup_%s);\n" % t.cpp_type
+	return out
+
+# Generate enums for input tokens.
+# Also generate a reverse lookup table for printing errors.
+# TODO: Maybe flatten the alphabet while making the dfa.
+def _gen_tokens(t: XsdComplexType) -> str:
+	out = ""
+	if t.group_dfas:
+		enum_tokens = set(chain(*[[to_enum_token(w) for w in x.alphabet] for x in t.group_dfas]))
+		lookup_tokens = set(chain(*[["\"%s\"" % w for w in x.alphabet] for x in t.group_dfas]))
+		out += "enum class gtok_%s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
+		out += "const char *gtok_lookup_%s[] = {%s};\n" % (t.cpp_type, ", ".join(lookup_tokens))
+	if t.attributes:
+		enum_tokens = [to_enum_token(x.name) for x in t.attributes.values()]
+		lookup_tokens = ["\"%s\"" % x.name for x in t.attributes.values()]
+		out += "enum class atok_%s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
+		out += "const char *atok_lookup_%s[] = {%s};\n" % (t.cpp_type, ", ".join(lookup_tokens))
+	return out
+
+# Generate state transition tables, indexed by token enums.
+# May cause a bug: sets aren't guaranteed to be ordered.
+def _gen_state_tables(t: XsdComplexType) -> str:
+	out = ""
+	for i, dfa in enumerate(t.group_dfas):
+		out += "int gstates%d_%s[%d][%d] = {\n" % (i, t.cpp_type, len(dfa.states), len(dfa.alphabet))
+		for i in range(0, max(dfa.states)+1):
+			state = dfa.transitions[i]
+			row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
+			out += "\t{%s},\n" % ", ".join(row)
+		out += "};\n"
+	return out
+
+# Generate lexing functions for children and attrs.
+def _gen_lexer_fns(t: XsdComplexType) -> str:
+	out = ""
+	if t.group_dfas:
+		alphabet = set(chain(*[x.alphabet for x in t.group_dfas]))
+		out += "gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
+		for i, a in enumerate(alphabet):
+			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
+			out += "\t\treturn gtok_%s::%s;\n" % (t.cpp_type, to_enum_token(a))
+			out += "\t}\n"
+		out += "\telse throw std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "}\n"
+	if t.attributes:
+		out += "atok_%s alex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
+		for i, a in enumerate(t.attributes.values()):
+			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a.name)
+			out += "\t\treturn atok_%s::%s;\n" % (t.cpp_type, to_enum_token(a.name))
+			out += "\t}\n"
+		out += "\telse throw std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "}\n"
 	return out
 
 def gen_complex_type_fn(t: XsdComplexType) -> str:
-	out = """
-void read_%s(pugi::xml_node &root, %s &out){
-""" % (t.cpp_type, t.cpp_type)
-	if isinstance(t.content_type, XsdGroup) and t.content_type._group:
-		out += indent(_gen_load_group(t.content_type))
-	out += "accept:\n"
-	out += "\treturn;\n"
+	out = ""
+	out += _gen_tokens(t)
+	out += _gen_lexer_fns(t)
+	out += _gen_state_tables(t)
+	out += "void read_%s(pugi::xml_node &root, %s &out){\n" % (t.cpp_type, t.cpp_type)
+
+	if t.group_dfas:
+		out += indent(_gen_load_group(t)) + "\n"
+	else:
+		out += "\tif(root.first_child().type() == pugi::node_element) throw std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
+		if t.has_simple_content():
+			out += indent(_gen_load_simple(t.content_type, "out.value", "root.child_value()")) + "\n"
+
+	if t.attributes:
+		out += indent(_gen_load_attrs(t)) + "\n"
+	else:
+		out += "\tif(root.first_attribute()) std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
+
 	out += "}\n"
 	return out
 
-# Generate function definitions.
+#
+
+# Generate enums, tokenizers, state tables and function definitions.
+
+print("""
+/* runtime error for state machines */
+void dfa_error(const char *wrong, int *states, const char **lookup, int len){
+	std::vector<std::string> expected;
+	for(int i=0; i<len; i++){
+		if(states[i] != -1) expected.push_back(lookup[i]);
+	}
+
+	std::string expected_or = expected[0];
+	for(int i=1; i<expected.size(); i++)
+		expected_or += std::string(" or ") + expected[i];
+
+	throw std::runtime_error("Expected " + expected_or + ", found " + std::string(wrong));
+}
+""")
+
+print("""
+/* runtime error for attributes */
+template<std::size_t N>
+void attr_error(std::bitset<N> astate, const char **lookup){
+	std::vector<std::string> missing;
+	for(int i=0; i<astate.size(); i++){
+		if(astate[i] == 0) missing.push_back(lookup[i]);
+	}
+
+	std::string missing_and = missing[0];
+	for(int i=1; i<missing.size(); i++)
+		missing_and += std::string(" and ") + missing[i];
+
+	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
+}
+""")
 
 for t in types:
 	print(gen_complex_type_fn(t))

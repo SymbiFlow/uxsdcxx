@@ -19,7 +19,17 @@ from third_party.DFA import DFA as pDFA
 from itertools import permutations
 from typing import List, Tuple, Dict, Set, Union
 
-def dfa_from_group(t: XsdGroup):
+from pprint import pprint
+
+class XsdDFA:
+	states: Set[int]
+	start: int
+	accepts: Set[int]
+	alphabet: List[str]
+	transitions: Dict[int, Dict[str, int]]
+	elements: Dict[str, XsdElement]
+
+def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	# Fill in a NFA of automata-lib type.
 	_nfa_states: Set[str] = set()
 	_nfa_state_transitions: Dict[str, Dict[str, Set[Union[str, None]]]] = {}
@@ -76,22 +86,6 @@ def dfa_from_group(t: XsdGroup):
 			vacants |= vacant
 		return (x, vacants)
 
-	# |-----a-> O --b--> O --c-->
-	# start --a-> O --c--> O --b-->
-	# |-----b-> ...
-	# This grows factorially! Be careful when using xs:all for many elements.
-	def _nfa_from_all(t: XsdGroup) -> Tuple[str, Set[str]]:
-		original_group = t._group
-		x = _new_state()
-		vacants = set()
-		for p in permutations(t._group):
-			t._group = list(p)
-			init, vacant = _nfa_from_sequence(t)
-			_add_transition(x, "", init)
-			vacants |= vacant
-		t._group = original_group
-		return (x, vacants)
-
 	# Generate a NFA from a model group or element.
 	# Return start state and "before-final" states which include transitions
 	# to None which denote vacant out-going arrows.
@@ -103,7 +97,7 @@ def dfa_from_group(t: XsdGroup):
 		elif t.model == "choice":
 			init, vacant = _nfa_from_choice(t)
 		elif t.model == "all":
-			init, vacant = _nfa_from_all(t)
+			raise NotImplementedError("Only top-level <xs:all> is supported.")
 		else:
 			raise NotImplementedError("I don't know what to do with model group node %s." % t)
 
@@ -137,7 +131,8 @@ def dfa_from_group(t: XsdGroup):
 	input_symbols = set()
 	for v in _nfa_state_transitions.values():
 		input_symbols |= set(v.keys())
-	input_symbols.remove("")
+	# Remove epsilon from the alphabet.
+	if "" in input_symbols: input_symbols.remove("")
 
 	nfa = NFA(states=_nfa_states,
 			input_symbols=input_symbols,
@@ -155,12 +150,15 @@ def dfa_from_group(t: XsdGroup):
 	# "{}" comes from automata-lib and means trap state.
 	# We will filter transitions to the trap state out and emit
 	# an error message if a state transition is not found for the given input.
-	state_map = {k: v for v, k in enumerate(pdfa.states)}
-	out = {}
-	out["states"] = {state_map[x] for x in pdfa.states if x != "{}"}
-	out["start"] = state_map[pdfa.start]
-	out["accepts"] = {state_map[x] for x in pdfa.accepts if x != "{}"}
-	out["transitions"] = {state_map[q]: {k: state_map[pdfa.delta(q, k)] for k in pdfa.alphabet if pdfa.delta(q, k) != "{}"} for q in pdfa.states if q != "{}"}
-	out["elements"] = _elements
+	#
+	# Sets are converted to lists, because this is a final format and we need ordering.
+	state_map = {k: v for v, k in enumerate([x for x in pdfa.states if x != "{}"])}
+	out = XsdDFA()
+	out.states = {state_map[x] for x in pdfa.states if x != "{}"}
+	out.start = state_map[pdfa.start]
+	out.accepts = {state_map[x] for x in pdfa.accepts if x != "{}"}
+	out.alphabet = list(pdfa.alphabet)
+	out.transitions = {state_map[q]: {k: state_map[pdfa.delta(q, k)] for k in pdfa.alphabet if pdfa.delta(q, k) != "{}"} for q in pdfa.states if q != "{}"}
+	out.elements = _elements
 
 	return out

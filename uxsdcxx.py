@@ -53,23 +53,23 @@ atomic_builtins = {
 # TODO: Make actual validators for these.
 atomic_builtin_load_formats = {
 	xs+"string": "%s",
-	xs+"boolean": "std::stoi(%s)",
-	xs+"float": "std::stof(%s)",
-	xs+"decimal": "std::stoi(%s)",
-	xs+"integer": "std::stoi(%s)",
-	xs+"nonPositiveInteger": "std::stoi(%s)",
-	xs+"negativeInteger": "std:.stoi(%s)",
-	xs+"long": "std::stol(%s)",
-	xs+"int": "std::stoi(%s)",
-	xs+"short": "std::stoi(%s)",
-	xs+"byte": "std::stoi(%s)",
-	xs+"nonNegativeInteger": "std::stoul(%s)",
-	xs+"unsignedLong": "std::stoul(%s)",
-	xs+"unsignedInt": "std::stoul(%s)",
-	xs+"unsignedShort": "std::stoul(%s)",
-	xs+"unsignedByte": "std::stoul(%s)",
-	xs+"positiveInteger": "std::stoul(%s)",
-	xs+"double": "std::stod(%s)",
+	xs+"boolean": "std::strtol(%s, NULL, 10)",
+	xs+"float": "std::strtof(%s, NULL)",
+	xs+"decimal": "std::strtol(%s, NULL, 10)",
+	xs+"integer": "std::strtol(%s, NULL, 10)",
+	xs+"nonPositiveInteger": "std::strtol(%s, NULL, 10)",
+	xs+"negativeInteger": "std::strtol(%s, NULL, 10)",
+	xs+"long": "std::strtoll(%s, NULL, 10)",
+	xs+"int": "std::strtol(%s, NULL, 10)",
+	xs+"short": "std::strtol(%s, NULL, 10)",
+	xs+"byte": "std::strtol(%s, NULL, 10)",
+	xs+"nonNegativeInteger": "std::strtoul(%s, NULL, 10)",
+	xs+"unsignedLong": "std::strtoull(%s, NULL, 10)",
+	xs+"unsignedInt": "std::strtoul(%s, NULL, 10)",
+	xs+"unsignedShort": "std::strtoul(%s, NULL, 10)",
+	xs+"unsignedByte": "std::strtoul(%s, NULL, 10)",
+	xs+"positiveInteger": "std::strtoul(%s, NULL, 10)",
+	xs+"double": "std::strtod(%s, NULL)",
 }
 
 cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "atomic_commit", "atomic_noexcept",
@@ -199,6 +199,7 @@ def anno_type_complex_type(t: XsdComplexType):
 	t.cpp_type = to_cpp_type(t.name)
 
 	for attr in t.attributes.values():
+		assert attr.use != "prohibited"
 		anno_type_simple_type(attr.type)
 
 	t.group_dfas = []
@@ -259,7 +260,7 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 def lexer_from_enum(t: XsdAtomicRestriction) -> str:
 	assert t.cpp_type.startswith("enum")
 	out = ""
-	out += "%s lex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type[5:])
+	out += "inline %s lex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type[5:])
 	for i, a in enumerate(t.validators[0].enumeration):
 		out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
 		out += "\t\treturn %s::%s;\n" % (t.cpp_type, to_enum_token(a))
@@ -331,7 +332,7 @@ if fn_declarations: print(fn_declarations , end="")
 
 def gen_init_fn() -> str:
 	out = """
-void read(const char *filename){
+void get_root_elements(const char *filename){
 	pugi::xml_document doc;
 	pugi::xml_parse_result result = doc.load_file(filename);
 	if(!result){
@@ -355,7 +356,7 @@ def _gen_load_simple(t: XsdSimpleType, container: str, input: str="node.child_va
 		out += "std::string raw, word;\n"
 		out += "raw = %s;\n" % input
 		out += "while(raw >> word){\n" % input
-		out += "\t%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.base_type.name] % "word")
+		out += "\t%s.emplace_back(%s);\n" % (container, atomic_builtin_load_formats[t.base_type.name] % "word")
 		out += "}\n"
 	elif t.cpp_type.startswith("enum"):
 		out += "%s = lex_%s(%s);\n" % (container, t.cpp_type[5:], input) # "enum_A"[5:] == A
@@ -367,11 +368,9 @@ def _gen_load_element_complex(t: XsdElement, parent: str="") -> str:
 	out = ""
 	container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
 	if t.cpp_type.startswith("std::vector"):
-		out += "%s.push_back(%s());\n" % (container, t.type.cpp_type)
-		out += "read_%s(node, %s.back());\n" % (t.type.cpp_type, container)
+		out += "%s.emplace_back(read_%s(node));\n" % (container, t.type.cpp_type)
 	elif t.cpp_type.startswith("std::unique_ptr"):
-		out += "%s = %s(new %s);\n" % (container, t.cpp_type, t.type.cpp_type)
-		out += "read_%s(node, *%s);\n" % (t.type.cpp_type, container)
+		out += "%s = std::make_unique<%s>(read_%s(node));\n" % (container, t.type.cpp_type, t.type.cpp_type)
 	else:
 		raise ValueError("It should be impossible for an XsdElement with a complex type to have C++ type %s." % t.cpp_type)
 	return out
@@ -382,7 +381,7 @@ def _gen_load_element(t: XsdElement, parent: str="") -> str:
 	elif isinstance(t.type, XsdAtomicBuiltin):
 		container = "%s%s" % ("%s." % parent if parent else "", t.cpp_name)
 		if t.cpp_type.startswith("std::vector"):
-			return "%s.push_back(%s);\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
+			return "%s.emplace_back(%s);\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
 		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
 	else:
 		raise NotImplementedError("%s?" % t.type)
@@ -471,7 +470,7 @@ def _gen_lexer_fns(t: XsdComplexType) -> str:
 	out = ""
 	if t.group_dfas:
 		alphabet = set(chain(*[x.alphabet for x in t.group_dfas]))
-		out += "gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
+		out += "inline gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
 		for i, a in enumerate(alphabet):
 			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
 			out += "\t\treturn gtok_%s::%s;\n" % (t.cpp_type, to_enum_token(a))
@@ -479,7 +478,7 @@ def _gen_lexer_fns(t: XsdComplexType) -> str:
 		out += "\telse throw std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
 		out += "}\n"
 	if t.attributes:
-		out += "atok_%s alex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
+		out += "inline atok_%s alex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
 		for i, a in enumerate(t.attributes.values()):
 			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a.name)
 			out += "\t\treturn atok_%s::%s;\n" % (t.cpp_type, to_enum_token(a.name))
@@ -493,7 +492,8 @@ def gen_complex_type_fn(t: XsdComplexType) -> str:
 	out += _gen_tokens(t)
 	out += _gen_lexer_fns(t)
 	out += _gen_state_tables(t)
-	out += "void read_%s(pugi::xml_node &root, %s &out){\n" % (t.cpp_type, t.cpp_type)
+	out += "%s read_%s(const pugi::xml_node &root){\n" % (t.cpp_type, t.cpp_type)
+	out += "\t%s out;\n" % t.cpp_type
 
 	if t.group_dfas:
 		out += indent(_gen_load_group(t)) + "\n"
@@ -507,6 +507,7 @@ def gen_complex_type_fn(t: XsdComplexType) -> str:
 	else:
 		out += "\tif(root.first_attribute()) std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
 
+	out += "\treturn out;\n"
 	out += "}\n"
 	return out
 

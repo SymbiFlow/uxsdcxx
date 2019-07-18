@@ -27,6 +27,7 @@ from itertools import chain
 from typing import List, Tuple, Dict, Set, Union
 
 from dfa import dfa_from_group
+from third_party import triehash
 
 xs = "{http://www.w3.org/2001/XMLSchema}"
 atomic_builtins = {
@@ -261,11 +262,9 @@ def lexer_from_enum(t: XsdAtomicRestriction) -> str:
 	assert t.cpp_type.startswith("enum")
 	out = ""
 	out += "inline %s lex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type[5:])
-	for i, a in enumerate(t.validators[0].enumeration):
-		out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
-		out += "\t\treturn %s::%s;\n" % (t.cpp_type, to_enum_token(a))
-		out += "\t}\n"
-	out += "\telse throw std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
+	triehash_alph = [(x, "%s::%s" % (t.cpp_type, to_enum_token(x))) for x in t.validators[0].enumeration]
+	out += indent(triehash.gen_lexer_body(triehash_alph)) + "\n"
+	out += "\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
 	out += "}\n"
 	return out
 
@@ -317,11 +316,13 @@ print("#include <memory>")
 print("#include <string>")
 print("#include <vector>")
 print("")
+print("#include <stddef.h>")
+print("#include <stdint.h>")
 print("#include \"pugixml.hpp\"")
 print("")
+print(triehash.gen_prelude())
 if struct_declarations: print(struct_declarations)
 if enum_definitions: print(enum_definitions)
-if enum_lexers: print(enum_lexers)
 if simple_types: print(type_tag_definition)
 if union_definitions: print(union_definitions)
 if struct_definitions: print(struct_definitions)
@@ -471,19 +472,15 @@ def _gen_lexer_fns(t: XsdComplexType) -> str:
 	if t.group_dfas:
 		alphabet = set(chain(*[x.alphabet for x in t.group_dfas]))
 		out += "inline gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
-		for i, a in enumerate(alphabet):
-			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a)
-			out += "\t\treturn gtok_%s::%s;\n" % (t.cpp_type, to_enum_token(a))
-			out += "\t}\n"
-		out += "\telse throw std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		triehash_alph = [(x, "gtok_%s::%s" % (t.cpp_type, to_enum_token(x))) for x in alphabet]
+		out += indent(triehash.gen_lexer_body(triehash_alph)) + "\n"
+		out += "\tthrow std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
 		out += "}\n"
 	if t.attributes:
 		out += "inline atok_%s alex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
-		for i, a in enumerate(t.attributes.values()):
-			out += "\t%s(strcmp(in, \"%s\") == 0){\n" % ("if" if i == 0 else "else if", a.name)
-			out += "\t\treturn atok_%s::%s;\n" % (t.cpp_type, to_enum_token(a.name))
-			out += "\t}\n"
-		out += "\telse throw std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		triehash_alph = [(x.name, "atok_%s::%s" % (t.cpp_type, to_enum_token(x.name))) for x in t.attributes.values()]
+		out += indent(triehash.gen_lexer_body(triehash_alph)) + "\n"
+		out += "\tthrow std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
 		out += "}\n"
 	return out
 
@@ -548,7 +545,17 @@ void attr_error(std::bitset<N> astate, const char **lookup){
 }
 """)
 
+if enum_lexers: print(enum_lexers)
+
 for t in types:
 	print(gen_complex_type_fn(t))
 
 print(gen_init_fn())
+
+print("""
+/* not generated- driver */
+
+int main(int argc, char **argv){
+	get_root_elements(argv[1]);
+}
+""")

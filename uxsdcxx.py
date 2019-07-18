@@ -551,11 +551,3 @@ for t in types:
 	print(gen_complex_type_fn(t))
 
 print(gen_init_fn())
-
-print("""
-/* not generated- driver */
-
-int main(int argc, char **argv){
-	get_root_elements(argv[1]);
-}
-""")

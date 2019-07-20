@@ -117,12 +117,11 @@ class Trie:
 		return new
 
 def gen_prelude() -> str:
-	out = "typedef uint16_t __attribute__((aligned(1))) triehash_uu16;\n"
-	out += "typedef uint32_t __attribute__((aligned(1))) triehash_uu32;\n"
-	out += "typedef uint64_t __attribute__((aligned(1))) triehash_uu64;\n"
-	out += "static_assert(__alignof__(triehash_uu16) == 1);\n"
-	out += "static_assert(__alignof__(triehash_uu32) == 1);\n"
-	out += "static_assert(__alignof__(triehash_uu64) == 1);\n"
+	out = ""
+	out += "typedef const uint32_t __attribute__((aligned(1))) triehash_uu32;\n"
+	out += "typedef const uint64_t __attribute__((aligned(1))) triehash_uu64;\n"
+	out += "static_assert(alignof(triehash_uu32) == 1, \"Unaligned 32-bit access not found.\");\n"
+	out += "static_assert(alignof(triehash_uu64) == 1, \"Unaligned 64-bit access not found.\");\n"
 	out += "#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__\n"
 	out += "#define onechar(c, s, l) (((uint64_t)(c)) << (s))\n"
 	out += "#else\n"
@@ -154,6 +153,8 @@ def gen_lexer_body(alphabet: List[Tuple[str, str]]) -> str:
 		for key in sorted(trie.children.keys()):
 			out += indent + "case %s:\n" % case_label(key)
 			out += lexer_case(trie.children[key], indent+"\t", index+len(key))
+			out += indent + "break;\n"
+		out += indent + "default: break;\n"
 		out += indent + "}\n"
 		return out
 
@@ -167,7 +168,6 @@ def gen_lexer_body(alphabet: List[Tuple[str, str]]) -> str:
 		t = trie.filter_depth(x).rebuild_tree()
 		out += lexer_case(t, "\t")
 		out += "\tbreak;\n"
-	out += "default:\n"
-	out += "\tbreak;\n"
+	out += "default: break;\n"
 	out += "}\n"
 	return out

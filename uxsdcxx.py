@@ -86,13 +86,15 @@ cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "
 builtin_fn_declarations = """
 void dfa_error(const char *wrong, int *states, const char **lookup, int len);
 template<std::size_t N>
+void all_error(std::bitset<N> gstate, const char **lookup);
+template<std::size_t N>
 void attr_error(std::bitset<N> astate, const char **lookup);
 void alloc_arenas(void);
 void get_root_elements(const char *filename);
 """
 
 dfa_error_fn = """
-/* runtime error for state machines */
+/* runtime error for <xs:choice> or <xs:sequence>s */
 void dfa_error(const char *wrong, int *states, const char **lookup, int len){
 	std::vector<std::string> expected;
 	for(int i=0; i<len; i++){
@@ -121,6 +123,23 @@ void attr_error(std::bitset<N> astate, const char **lookup){
 		missing_and += std::string(" and ") + missing[i];
 
 	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
+}
+"""
+
+all_error_fn = """
+/* runtime error for <xs:all>s */
+template<std::size_t N>
+void all_error(std::bitset<N> gstate, const char **lookup){
+	std::vector<std::string> missing;
+	for(unsigned int i=0; i<gstate.size(); i++){
+		if(gstate[i] == 0) missing.push_back(lookup[i]);
+	}
+
+	std::string missing_and = missing[0];
+	for(unsigned int i=1; i<missing.size(); i++)
+		missing_and += std::string(" and ") + missing[i];
+
+	throw std::runtime_error("Didn't find required elements " + missing_and + ".");
 }
 """
 
@@ -230,6 +249,11 @@ def anno_type_simple_type(t: XsdSimpleType) -> None:
 		t.cpp_type = atomic_builtins[t.name]
 	elif isinstance(t, XsdAtomicRestriction):
 		anno_type_restriction(t)
+	# Just read xs:lists into a string for now.
+	# That simplifies validation and keeps heap allocation to nodes only.
+	# VPR just reads list types into a string, too.
+	elif isinstance(t, XsdList):
+		t.cpp_type = "const char *"
 	elif isinstance(t, XsdUnion):
 		anno_type_union(t)
 	else:
@@ -244,12 +268,16 @@ def anno_type_complex_type(t: XsdComplexType) -> None:
 		assert attr.use != "prohibited"
 		anno_type_simple_type(attr.type)
 
-	t.dfa = None
+	t.model = None
 	t.child_elements = []
 	if isinstance(t.content_type, XsdGroup) and len(t.content_type._group) > 0:
-		assert t.content_type.model != "any", "<xs:any> is not supported."
-		assert t.content_type.model != "all", "<xs:all> is not supported."
-		t.dfa = dfa_from_group(t.content_type)
+		if t.content_type.model == "all":
+			t.model = "all"
+		elif t.content_type.model in ["choice", "sequence"]:
+			t.model = "dfa"
+			t.dfa = dfa_from_group(t.content_type)
+		else:
+			raise NotImplementedError("Model group %s is not supported." % t.content_type.model)
 		t.child_elements = anno_type_group(t.content_type)
 	if t.has_simple_content():
 		anno_type_simple_type(t.content_type)
@@ -343,9 +371,9 @@ for t in sorted(arena_types, key=lambda x: x.name):
 # TODO: Maybe flatten the alphabet while making the dfa.
 def enum_from_complex_type(t: XsdComplexType) -> str:
 	out = ""
-	if t.dfa:
-		enum_tokens = [to_enum_token(w) for w in t.dfa.alphabet]
-		lookup_tokens = ["\"%s\"" % w for w in t.dfa.alphabet]
+	if t.child_elements:
+		enum_tokens = [to_enum_token(e.name) for e in t.child_elements]
+		lookup_tokens = ["\"%s\"" % e.name for e in t.child_elements]
 		out += "enum class gtok_%s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
 		out += "const char *gtok_lookup_%s[] = {%s};\n" % (t.cpp_type, ", ".join(lookup_tokens))
 	if t.attributes:
@@ -358,9 +386,9 @@ def enum_from_complex_type(t: XsdComplexType) -> str:
 # Generate lexing functions for children and attrs.
 def lexer_from_complex_type(t: XsdComplexType) -> str:
 	out = ""
-	if t.dfa:
+	if t.child_elements:
 		out += "inline gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
-		triehash_alph = [(x, "gtok_%s::%s" % (t.cpp_type, to_enum_token(x))) for x in t.dfa.alphabet]
+		triehash_alph = [(e.name, "gtok_%s::%s" % (t.cpp_type, to_enum_token(e.name))) for e in t.child_elements]
 		out += indent(triehash.gen_lexer_body(triehash_alph)) + "\n"
 		out += "\tthrow std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
 		out += "}\n"
@@ -397,12 +425,95 @@ for t in types:
 
 #
 
+def _gen_dfa_table(t: XsdGroup) -> str:
+	out = ""
+	out += "int gstate_%s[%d][%d] = {\n" % (t.cpp_type, len(t.dfa.states), len(t.dfa.alphabet))
+	for i in range(0, max(t.dfa.states)+1):
+		state = t.dfa.transitions[i]
+		row = [str(state[x]) if state.get(x) is not None else "-1" for x in t.dfa.alphabet]
+		out += "\t{%s},\n" % ", ".join(row)
+	out += "};\n"
+	return out
+
+def _gen_count_dfa(t: XsdGroup) -> str:
+	out = ""
+	out += "int next, state=%d;\n" % t.dfa.start
+	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
+	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
+	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp_type
+	out += "\tif(next == -1) dfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n"  % (t.cpp_type, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
+	out += "\tstate = next;\n"
+
+	out += "\tswitch(in){\n";
+	for el in t.child_elements:
+		if not isinstance(el.type, XsdComplexType): continue
+		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(el.name))
+		out += "\t\tcount_%s(node);\n" % el.type.name
+		if el.many: out += "\t\tg_num_%s++;\n" % el.type.name
+		out += "\t\tbreak;\n"
+	out += "\tdefault: break; /* Not possible. */\n"
+	out += "\t}\n";
+
+	reject_cond = " && ".join(["state != %d" % x for x in t.dfa.accepts])
+	out += "}\n"
+	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n" % (reject_cond, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
+	return out
+
+# Mostly the same thing with _gen_load_attr.
+# Looks like it's planned in XSD 1.0 for alls to be implemented in the same way
+# with attributes.
+def _gen_count_all(t: XsdGroup) -> str:
+	out = ""
+	N = len(t.child_elements)
+	out += "std::bitset<%d> gstate = 0;\n" % N
+	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
+	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
+	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
+	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
+
+	out += "\tswitch(in){\n";
+	for el in t.child_elements:
+		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(el.name))
+		out += "\t\tcount_%s(node);\n" % el.type.name
+		out += "\t\tbreak;\n"
+	out += "\tdefault: break; /* Not possible. */\n"
+	out += "\t}\n";
+	out += "}\n"
+
+	mask = "".join(["1" if x.occurs[0] == 0 else "0" for x in t.child_elements][::-1])
+	out += "std::bitset<%d> test_state = gstate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
+	out += "if(!test_state.all()) all_error(test_state, gtok_lookup_%s);\n" % t.cpp_type
+	return out
+
+def count_fn_from_complex_type(t: XsdComplexType) -> str:
+	out = ""
+	out += "void count_%s(const pugi::xml_node &root){\n" % t.name
+	if t.model == "all":
+		out += indent(_gen_count_all(t)) + "\n"
+	elif t.model == "dfa":
+		out = _gen_dfa_table(t) + out
+		out += indent(_gen_count_dfa(t)) + "\n"
+	else:
+		out += "\tif(root.first_child().type() == pugi::node_element) throw std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
+	out += "}\n"
+	return out
+
+count_fn_definitions = ""
+for t in types:
+	count_fn_definitions += count_fn_from_complex_type(t) + "\n"
+
+#
+
 def _gen_load_simple(t: XsdSimpleType, container: str, input: str="node.child_value()") -> str:
 	out = ""
 	if isinstance(t, XsdAtomicRestriction):
 		out += "%s = lex_%s(%s);\n" % (container, t.name, input)
-	else:
+	elif isinstance(t, XsdList):
+		out += "%s = strdup(%s);\n" % (container, t.name, input)
+	elif isinstance(t, XsdAtomicBuiltin):
 		out += "%s = %s;\n" % (container, atomic_builtin_load_formats[t.name] % input)
+	else:
+		raise NotImplementedError("I don't know how to load %s." % t)
 	return out
 
 def _gen_load_element_complex(t: XsdElement, parent: str="") -> str:
@@ -423,53 +534,18 @@ def _gen_load_element(t: XsdElement, parent: str="") -> str:
 		container = "%s%s" % ("%s->" % parent if parent else "", t.cpp_name)
 		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
 	else:
-		raise NotImplementedError("%s?" % t.type)
-
-def _gen_table_count_group(t: XsdGroup) -> str:
-	out = ""
-	out += "int gstate_%s[%d][%d] = {\n" % (t.cpp_type, len(t.dfa.states), len(t.dfa.alphabet))
-	for i in range(0, max(t.dfa.states)+1):
-		state = t.dfa.transitions[i]
-		row = [str(state[x]) if state.get(x) is not None else "-1" for x in t.dfa.alphabet]
-		out += "\t{%s},\n" % ", ".join(row)
-	out += "};\n"
-	return out
-
-def _gen_count_group(t: XsdGroup) -> str:
-	out = ""
-	out += "int next, state=%d;\n" % t.dfa.start
-	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
-	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp_type
-	out += "\tif(next == -1) dfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n"  % (t.cpp_type, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
-	out += "\tstate = next;\n"
-
-	out += "\tswitch(in){\n";
-	for inp, el in t.dfa.elements:
-		if not isinstance(el.type, XsdComplexType): continue
-		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(inp))
-		out += "\t\tcount_%s(node);\n" % el.type.name
-		if el.many: out += "\t\tg_num_%s++;\n" % el.type.name
-		out += "\t\tbreak;\n"
-	out += "\tdefault: break; /* Not possible. */\n"
-	out += "\t}\n";
-
-	reject_cond = " && ".join(["state != %d" % x for x in t.dfa.accepts])
-	out += "}\n"
-	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n" % (reject_cond, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
-	return out
+		raise NotImplementedError("I don't know how to load %s." % t.type)
 
 def _gen_load_group(t: XsdGroup) -> str:
 	out = ""
-	for _, el in t.dfa.elements:
-		if not el.many: continue
+	for el in [x for x in t.child_elements if x.many]:
 		out += "out->%s_list = &%s_arena[g_num_%s];\n" % (el.name, el.type.name, el.type.name)
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
 	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
 
 	out += "\tswitch(in){\n";
-	for inp, el in t.dfa.elements:
-		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(inp))
+	for el in t.child_elements:
+		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_enum_token(el.name))
 		out += indent(_gen_load_element(el, "out"), 2) + "\n"
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
@@ -501,24 +577,10 @@ def _gen_load_attrs(t: XsdGroup) -> str:
 	out += "if(!test_state.all()) attr_error(test_state, atok_lookup_%s);\n" % t.cpp_type
 	return out
 
-def count_fn_from_complex_type(t: XsdComplexType) -> str:
-	out = ""
-	if t.dfa:
-		out += _gen_table_count_group(t)
-	out += "void count_%s(const pugi::xml_node &root){\n" % t.name
-
-	if t.dfa:
-		out += indent(_gen_count_group(t)) + "\n"
-	else:
-		out += "\tif(root.first_child().type() == pugi::node_element) throw std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
-	out += "}\n"
-	return out
-
 def load_fn_from_complex_type(t: XsdComplexType) -> str:
 	out = ""
 	out += "void load_%s(const pugi::xml_node &root, %s *out){\n" % (t.name, t.cpp_type)
-
-	if t.dfa:
+	if t.model:
 		out += indent(_gen_load_group(t)) + "\n"
 	elif t.has_simple_content():
 		out += indent(_gen_load_simple(t.content_type, "out->value", "root.child_value()")) + "\n"
@@ -530,10 +592,6 @@ def load_fn_from_complex_type(t: XsdComplexType) -> str:
 
 	out += "}\n"
 	return out
-
-count_fn_definitions = ""
-for t in types:
-	count_fn_definitions += count_fn_from_complex_type(t) + "\n"
 
 load_fn_definitions = ""
 for t in types:
@@ -614,8 +672,9 @@ print("**/")
 if enum_lexers: print(enum_lexers)
 print(complex_type_lexers)
 
-print(dfa_error_fn)
-print(attr_error_fn)
+if [x for x in types if x.model == "dfa"]: print(dfa_error_fn)
+if [x for x in types if x.attributes]: print(attr_error_fn)
+if [x for x in types if x.model == "all"]: print(all_error_fn)
 
 print("/**")
 print(" * Validating&counting functions. These do the tree validation and count elements to allocate arenas.")

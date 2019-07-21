@@ -27,13 +27,11 @@ class XsdDFA:
 	accepts: Set[int]
 	alphabet: List[str]
 	transitions: Dict[int, Dict[str, int]]
-	elements: Dict[str, XsdElement]
 
 def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	# Fill in a NFA of automata-lib type.
 	_nfa_states: Set[str] = set()
 	_nfa_state_transitions: Dict[str, Dict[str, Set[Union[str, None]]]] = {}
-	_elements: Set[Tuple[str, XsdElement]] = set()
 
 	def _new_state() -> str:
 		x = "q%d" % len(_nfa_states)
@@ -61,7 +59,6 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	def _nfa_from_element(t: XsdElement) -> Tuple[str, Set[str]]:
 		x = _new_state()
 		_add_transition(x, t.name, None)
-		_elements.add((t.name, t))
 		return (x, {x})
 
 	# start --a-> O --b--> O --c-->
@@ -159,6 +156,5 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	out.accepts = {state_map[x] for x in pdfa.accepts if x != "{}"}
 	out.alphabet = sorted(pdfa.alphabet)
 	out.transitions = {state_map[q]: {k: state_map[pdfa.delta(q, k)] for k in pdfa.alphabet if pdfa.delta(q, k) != "{}"} for q in pdfa.states if q != "{}"}
-	out.elements = sorted(_elements)
 
 	return out

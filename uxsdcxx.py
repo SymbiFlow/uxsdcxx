@@ -114,13 +114,13 @@ attr_error_fn = """
 template<std::size_t N>
 void attr_error(std::bitset<N> astate, const char **lookup){
 	std::vector<std::string> missing;
-	for(unsigned int i=0; i<astate.size(); i++){
+	for(unsigned int i=0; i<N; i++){
 		if(astate[i] == 0) missing.push_back(lookup[i]);
 	}
 
 	std::string missing_and = missing[0];
 	for(unsigned int i=1; i<missing.size(); i++)
-		missing_and += std::string(" and ") + missing[i];
+		missing_and += std::string(", ") + missing[i];
 
 	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
 }
@@ -131,13 +131,13 @@ all_error_fn = """
 template<std::size_t N>
 void all_error(std::bitset<N> gstate, const char **lookup){
 	std::vector<std::string> missing;
-	for(unsigned int i=0; i<gstate.size(); i++){
+	for(unsigned int i=0; i<N; i++){
 		if(gstate[i] == 0) missing.push_back(lookup[i]);
 	}
 
 	std::string missing_and = missing[0];
 	for(unsigned int i=1; i<missing.size(); i++)
-		missing_and += std::string(" and ") + missing[i];
+		missing_and += std::string(", ") + missing[i];
 
 	throw std::runtime_error("Didn't find required elements " + missing_and + ".");
 }
@@ -282,6 +282,24 @@ def anno_type_complex_type(t: XsdComplexType) -> None:
 	if t.has_simple_content():
 		anno_type_simple_type(t.content_type)
 
+# Annotate the schema with cpp_types of every complex and simple type.
+# Put aside anonymous complex types, enums and unions for generating actual type declaration.
+for t in types:
+	anno_type_complex_type(t)
+
+for e in elements:
+	anno_type_element(e)
+
+# Sort types by tree height.
+def key_ctype(x: XsdComplexType, visited=None):
+	if not visited: visited=set()
+	if x in visited: return 0
+	else: visited.add(x)
+	return max([0] + [key_ctype(y.type, visited) for y in x.child_elements]) + 1
+
+types += anonymous_complex_types
+types.sort(key=key_ctype)
+
 #
 
 # Generate a tagged union type.
@@ -297,7 +315,8 @@ def typedefn_from_union(t: XsdUnion) -> str:
 	return out
 
 def typedefn_from_enum(t: XsdAtomicRestriction) -> str:
-	enum_values = [to_enum_token(x) for x in t.validators[0].enumeration]
+	enum_values = ["UXSD_INVALID = 0"]
+	enum_values += [to_enum_token(x) for x in t.validators[0].enumeration]
 	return "enum class %s {%s};" % (t.cpp_type, ", ".join(enum_values))
 
 def typedefn_from_complex_type(t: XsdComplexType) -> str:
@@ -309,24 +328,13 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 			out += "int num_%s;\n" % child.name
 			out += "%s * %s_list;\n" % (child.cpp_type, child.name)
 		else:
-			out += "%s %s;\n" % (child.cpp_type, checked(child.name))
+			child.name = checked(child.name)
+			out += "%s %s;\n" % (child.cpp_type, child.name)
 	if t.has_simple_content():
 		out += "%s value;\n" % (t.content_type.cpp_type)
 
 	out = "struct %s {\n" % t.cpp_type + indent(out) + "\n};\n"
 	return out
-
-# Annotate the schema with cpp_types of every complex and simple type.
-# Put aside anonymous complex types, enums and unions for generating actual type declaration.
-for t in types:
-	anno_type_complex_type(t)
-
-for e in elements:
-	anno_type_element(e)
-
-types += anonymous_complex_types
-
-# Generate type declarations and definitions, and function declarations.
 
 struct_declarations = ""
 struct_definitions = ""
@@ -334,11 +342,14 @@ for t in types:
 	struct_declarations += "struct %s;\n" % t.cpp_type
 	struct_definitions += typedefn_from_complex_type(t)
 
+# https://stackoverflow.com/a/39835527
 enum_definitions = ""
+enums = list(dict.fromkeys(enums))
 for e in enums:
 	enum_definitions += typedefn_from_enum(e) + "\n"
 
 union_definitions = ""
+unions = list(dict.fromkeys(unions))
 for u in unions:
 	struct_declarations += "struct %s;\n" % u.cpp_type
 	union_definitions += typedefn_from_union(u) + "\n"
@@ -383,7 +394,6 @@ def enum_from_complex_type(t: XsdComplexType) -> str:
 		out += "const char *atok_lookup_%s[] = {%s};\n" % (t.cpp_type, ", ".join(lookup_tokens))
 	return out
 
-# Generate lexing functions for children and attrs.
 def lexer_from_complex_type(t: XsdComplexType) -> str:
 	out = ""
 	if t.child_elements:
@@ -400,14 +410,15 @@ def lexer_from_complex_type(t: XsdComplexType) -> str:
 		out += "}\n"
 	return out
 
-# Generates a string->enum function.
 def lexer_from_enum(t: XsdAtomicRestriction) -> str:
 	assert t.cpp_type.startswith("enum")
 	out = ""
-	out += "inline %s lex_%s(const char *in){\n" % (t.cpp_type, t.name)
+	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp_type, t.name)
 	triehash_alph = [(x, "%s::%s" % (t.cpp_type, to_enum_token(x))) for x in t.validators[0].enumeration]
 	out += indent(triehash.gen_lexer_body(triehash_alph)) + "\n"
-	out += "\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
+	out += "\tif(throw_on_invalid)\n"
+	out += "\t\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
+	out += "\treturn %s::UXSD_INVALID;\n" % t.cpp_type
 	out += "}\n"
 	return out
 
@@ -504,14 +515,40 @@ for t in types:
 
 #
 
-def _gen_load_simple(t: XsdSimpleType, container: str, input: str="node.child_value()") -> str:
+# TODO: Find a cleaner way to load unions.
+def _gen_load_union(t: XsdUnion, container: str, input: str) -> str:
 	out = ""
-	if isinstance(t, XsdAtomicRestriction):
-		out += "%s = lex_%s(%s);\n" % (container, t.name, input)
-	elif isinstance(t, XsdList):
-		out += "%s = strdup(%s);\n" % (container, t.name, input)
-	elif isinstance(t, XsdAtomicBuiltin):
+	for m in t.member_types:
+		new_container = "%s.%s" % (container, to_union_member_type(m.cpp_type))
+		out += "%s.tag = type_tag::%s;\n" % (container, to_enum_token(m.cpp_type))
+		if isinstance(m, XsdAtomicBuiltin):
+			out += "%s = %s;\n" % (new_container, atomic_builtin_load_formats[m.name] % input)
+			out += "if(errno == 0)\n"
+			out += "\tbreak;\n"
+		elif isinstance(m, XsdAtomicRestriction):
+			out += "%s = lex_%s(%s, false);\n" % (new_container, m.name, input)
+			out += "if(%s != %s::UXSD_INVALID)\n" % (new_container, m.cpp_type)
+			out += "break;\n"
+		else:
+			raise NotImplementedError("I don't know how to load %s into a union." % m)
+	out += "throw std::runtime_error(\"Couldn't load a suitable value into union %s.\");\n" % t.name
+	return out
+
+# See https://stackoverflow.com/questions/26080829/detecting-strtol-failure
+# Since detecting additional characters require some other hoops which would
+# hurt performance, we only detect errors using errno.
+def _gen_load_simple(t: XsdSimpleType, container: str, input: str) -> str:
+	out = ""
+	if isinstance(t, XsdAtomicBuiltin):
 		out += "%s = %s;\n" % (container, atomic_builtin_load_formats[t.name] % input)
+		out += "if(errno != 0)\n"
+		out += "\tthrow std::runtime_error(\"Invalid value to load a %s into %s.\");" % (t.cpp_type, container)
+	elif isinstance(t, XsdAtomicRestriction):
+		out += "%s = lex_%s(%s, true);\n" % (container, t.name, input)
+	elif isinstance(t, XsdList):
+		out += "%s = strdup(%s);\n" % (container, input)
+	elif isinstance(t, XsdUnion):
+		out += _gen_load_union(t, container, input)
 	else:
 		raise NotImplementedError("I don't know how to load %s." % t)
 	return out
@@ -531,7 +568,7 @@ def _gen_load_element(t: XsdElement, parent: str="") -> str:
 	if isinstance(t.type, XsdComplexType):
 		return _gen_load_element_complex(t, parent)
 	elif isinstance(t.type, XsdAtomicBuiltin):
-		container = "%s%s" % ("%s->" % parent if parent else "", t.cpp_name)
+		container = "%s%s" % ("%s->" % parent if parent else "", t.name)
 		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
 	else:
 		raise NotImplementedError("I don't know how to load %s." % t.type)
@@ -566,7 +603,7 @@ def _gen_load_attrs(t: XsdGroup) -> str:
 	out += "\tswitch(in){\n";
 	for attr in t.attribute_list:
 		out += "\tcase atok_%s::%s:\n" % (t.cpp_type, to_enum_token(attr.name))
-		out += indent(_gen_load_simple(attr.type, "out->%s" % attr.name, "attr.value()"), 2) + "\n"
+		out += indent(_gen_load_simple(attr.type, "out->%s" % checked(attr.name), "attr.value()"), 2) + "\n"
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
@@ -640,6 +677,7 @@ print("#include <memory>")
 print("#include <string>")
 print("#include <vector>")
 print("")
+print("#include <error.h>")
 print("#include <stddef.h>")
 print("#include <stdint.h>")
 print("#include \"pugixml.hpp\"")

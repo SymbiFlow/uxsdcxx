@@ -3,6 +3,7 @@
 
 from pprint import pprint
 
+import hashlib
 import os
 import re
 import sys
@@ -28,48 +29,46 @@ from typing import List, Tuple, Dict, Set, Union
 from dfa import dfa_from_group
 from third_party import triehash
 
-xs = "{http://www.w3.org/2001/XMLSchema}"
 atomic_builtins = {
-	xs+"string": "const char *",
-	xs+"boolean": "bool",
-	xs+"float": "float",
-	xs+"decimal": "int",
-	xs+"integer": "int",
-	xs+"nonPositiveInteger": "int",
-	xs+"negativeInteger": "int",
-	xs+"long": "long",
-	xs+"int": "int",
-	xs+"short": "short",
-	xs+"byte": "char",
-	xs+"nonNegativeInteger": "unsigned int",
-	xs+"unsignedLong": "unsigned long",
-	xs+"unsignedInt": "unsigned int",
-	xs+"unsignedShort": "unsigned short",
-	xs+"unsignedByte": "unsigned byte",
-	xs+"positiveInteger": "unsigned int",
-	xs+"double": "double",
+	"string": "const char *",
+	"boolean": "bool",
+	"float": "float",
+	"decimal": "int",
+	"integer": "int",
+	"nonPositiveInteger": "int",
+	"negativeInteger": "int",
+	"long": "long",
+	"int": "int",
+	"short": "short",
+	"byte": "char",
+	"nonNegativeInteger": "unsigned int",
+	"unsignedLong": "unsigned long",
+	"unsignedInt": "unsigned int",
+	"unsignedShort": "unsigned short",
+	"unsignedByte": "unsigned byte",
+	"positiveInteger": "unsigned int",
+	"double": "double",
 }
 
-# TODO: Make actual validators for these.
 atomic_builtin_load_formats = {
-	xs+"string": "strdup(%s)",
-	xs+"boolean": "std::strtol(%s, NULL, 10)",
-	xs+"float": "std::strtof(%s, NULL)",
-	xs+"decimal": "std::strtol(%s, NULL, 10)",
-	xs+"integer": "std::strtol(%s, NULL, 10)",
-	xs+"nonPositiveInteger": "std::strtol(%s, NULL, 10)",
-	xs+"negativeInteger": "std::strtol(%s, NULL, 10)",
-	xs+"long": "std::strtoll(%s, NULL, 10)",
-	xs+"int": "std::strtol(%s, NULL, 10)",
-	xs+"short": "std::strtol(%s, NULL, 10)",
-	xs+"byte": "std::strtol(%s, NULL, 10)",
-	xs+"nonNegativeInteger": "std::strtoul(%s, NULL, 10)",
-	xs+"unsignedLong": "std::strtoull(%s, NULL, 10)",
-	xs+"unsignedInt": "std::strtoul(%s, NULL, 10)",
-	xs+"unsignedShort": "std::strtoul(%s, NULL, 10)",
-	xs+"unsignedByte": "std::strtoul(%s, NULL, 10)",
-	xs+"positiveInteger": "std::strtoul(%s, NULL, 10)",
-	xs+"double": "std::strtod(%s, NULL)",
+	"string": "strdup(%s)",
+	"boolean": "std::strtol(%s, NULL, 10)",
+	"float": "std::strtof(%s, NULL)",
+	"decimal": "std::strtol(%s, NULL, 10)",
+	"integer": "std::strtol(%s, NULL, 10)",
+	"nonPositiveInteger": "std::strtol(%s, NULL, 10)",
+	"negativeInteger": "std::strtol(%s, NULL, 10)",
+	"long": "std::strtoll(%s, NULL, 10)",
+	"int": "std::strtol(%s, NULL, 10)",
+	"short": "std::strtol(%s, NULL, 10)",
+	"byte": "std::strtol(%s, NULL, 10)",
+	"nonNegativeInteger": "std::strtoul(%s, NULL, 10)",
+	"unsignedLong": "std::strtoull(%s, NULL, 10)",
+	"unsignedInt": "std::strtoul(%s, NULL, 10)",
+	"unsignedShort": "std::strtoul(%s, NULL, 10)",
+	"unsignedByte": "std::strtoul(%s, NULL, 10)",
+	"positiveInteger": "std::strtoul(%s, NULL, 10)",
+	"double": "std::strtod(%s, NULL)",
 }
 
 cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "atomic_commit", "atomic_noexcept",
@@ -85,73 +84,13 @@ cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "
 
 #
 
-builtin_fn_declarations = """
-void dfa_error(const char *wrong, int *states, const char **lookup, int len);
-template<std::size_t N>
-void all_error(std::bitset<N> gstate, const char **lookup);
-template<std::size_t N>
-void attr_error(std::bitset<N> astate, const char **lookup);
-void alloc_arenas(void);
-void get_root_elements(const char *filename);
-"""
-
-dfa_error_fn = """
-/* runtime error for <xs:choice> or <xs:sequence>s */
-void dfa_error(const char *wrong, int *states, const char **lookup, int len){
-	std::vector<std::string> expected;
-	for(int i=0; i<len; i++){
-		if(states[i] != -1) expected.push_back(lookup[i]);
-	}
-
-	std::string expected_or = expected[0];
-	for(unsigned int i=1; i<expected.size(); i++)
-		expected_or += std::string(" or ") + expected[i];
-
-	throw std::runtime_error("Expected " + expected_or + ", found " + std::string(wrong));
-}
-"""
-
-attr_error_fn = """
-/* runtime error for attributes */
-template<std::size_t N>
-void attr_error(std::bitset<N> astate, const char **lookup){
-	std::vector<std::string> missing;
-	for(unsigned int i=0; i<N; i++){
-		if(astate[i] == 0) missing.push_back(lookup[i]);
-	}
-
-	std::string missing_and = missing[0];
-	for(unsigned int i=1; i<missing.size(); i++)
-		missing_and += std::string(", ") + missing[i];
-
-	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
-}
-"""
-
-all_error_fn = """
-/* runtime error for <xs:all>s */
-template<std::size_t N>
-void all_error(std::bitset<N> gstate, const char **lookup){
-	std::vector<std::string> missing;
-	for(unsigned int i=0; i<N; i++){
-		if(gstate[i] == 0) missing.push_back(lookup[i]);
-	}
-
-	std::string missing_and = missing[0];
-	for(unsigned int i=1; i<missing.size(); i++)
-		missing_and += std::string(", ") + missing[i];
-
-	throw std::runtime_error("Didn't find required elements " + missing_and + ".");
-}
-"""
-
-#
-
-filename = sys.argv[1]
-namespace = os.path.splitext(os.path.basename(filename))[0]
+file_name = sys.argv[1]
+base_name = os.path.splitext(os.path.basename(file_name))[0]
+header_file_name = base_name + "_uxsdcxx.h"
+impl_file_name = base_name + "_uxsdcxx.cpp"
 
 # Read in the schema- here we go!
-schema = xmlschema.validators.XMLSchema10(filename)
+schema = xmlschema.validators.XMLSchema10(file_name)
 
 # Complex types found inside elements. They are not found in the global map,
 # so we have to reserve them while traversing types in the global map
@@ -166,13 +105,23 @@ unions = []
 # We generate a special "types" enum from this, to put in all tagged union type definitions.
 simple_types = set()
 
-# In C++ code, we have to allocate global arenas for types which can occur more than once,
+# In C++ code, we have to allocate global pools for types which can occur more than once,
 # so that we can avoid lots of reallocs on the heap.
-arena_types = set()
+pool_types = set()
 
 # Get all global user-defined types.
 types: List[XsdComplexType] = [v for k, v in schema.types.items() if "w3.org" not in k and isinstance(v, XsdComplexType)]
-elements: List[XsdElement] = [v for v in schema.elements.values()]
+root_elements: List[XsdElement] = [v for v in schema.elements.values()]
+
+#
+
+# https://stackoverflow.com/a/3431838
+def md5(fname):
+    hash_md5 = hashlib.md5()
+    with open(fname, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
 
 # Check against keywords, warn and rename if necessary.
 def checked(x: str) -> str:
@@ -195,11 +144,17 @@ def to_union_member_type(x: str) -> str:
 def indent(x: str, n: int=1) -> str:
 	return "\n".join(["\t"*n + line if line else "" for line in x.split("\n")])
 
+# Rudimentary pluralization function. It's used to name lists of things.
+def pluralize(x: str) -> str:
+	if x[-2:] in ["sh", "ch", "ss"]: return x+"es"
+	elif x[-1:] in ["s", "x", "z"]: return x+"es"
+	else: return x+"s"
+
 #
 
 # Annotate the xmlschema tree with convenient data structures, such as ordered
 # access to children and attributes, C++ types of complex types etc.
-def anno_type_element(t: XsdElement, many=False, optional=False) -> None:
+def anno_element(t: XsdElement, many=False, optional=False) -> None:
 	if getattr(t, "cpp_type", None) is not None: return
 
 	if t.occurs[1] is None or t.occurs[1] > 1: many = True
@@ -209,64 +164,68 @@ def anno_type_element(t: XsdElement, many=False, optional=False) -> None:
 		anonymous_complex_types.append(t.type)
 
 	if isinstance(t.type, XsdComplexType):
-		anno_type_complex_type(t.type)
-		# We have a recursive type and anno_typedecl_complex_type did nothing.
+		anno_complex_type(t.type)
+		# We have a recursive type and annodecl_complex_type did nothing.
 		if not getattr(t.type, "cpp_type", None): return
 	else:
-		anno_type_simple_type(t.type)
+		anno_simple_type(t.type)
 
 	t.many = many
 	t.optional = optional
-	if many: arena_types.add(t.type)
 	t.cpp_type = t.type.cpp_type
+	if many:
+		pool_types.add(t.type)
 
 # Return a list of elements in the group to aid complex type annotation.
-def anno_type_group(t: XsdGroup, many=False, optional=False) -> List[XsdElement]:
+def anno_group(t: XsdGroup, many=False, optional=False) -> List[XsdElement]:
 	out = []
 	if t.occurs[1] is None or t.occurs[1] > 1: many = True
 	if t.occurs[0] is 0: optional = True
 	for e in t._group:
 		if isinstance(e, XsdGroup):
-			out += anno_type_group(e, many, optional)
+			out += anno_group(e, many, optional)
 		elif isinstance(e, XsdElement):
 			out += [e]
-			anno_type_element(e, many, optional)
+			anno_element(e, many, optional)
 		else:
 			raise NotImplementedError("I don't know what to do with group member %s." % e)
 	return out
 
 # Only enumerations are supported as restrictions.
-def anno_type_restriction(t: XsdAtomicRestriction) -> None:
+def anno_restriction(t: XsdAtomicRestriction) -> None:
 	assert len(t.validators) == 1, "I can only handle simple enumerations."
 	# Possibly member of an XsdList or XsdUnion.
 	if not t.name: t.name = t.parent.name
 	t.cpp_type = "enum_%s" % t.name
 	enums.append(t)
 
-def anno_type_union(t: XsdUnion) -> None:
+def anno_union(t: XsdUnion) -> None:
 	t.cpp_type = "union_%s" % t.name
 	for m in t.member_types:
-		anno_type_simple_type(m)
+		anno_simple_type(m)
 		simple_types.add(m)
 	unions.append(t)
 
 # See https://www.obj-sys.com/docs/xbv23/CCppUsersGuide/ch04.html.
-def anno_type_simple_type(t: XsdSimpleType) -> None:
+def anno_simple_type(t: XsdSimpleType) -> None:
+	# https://bugs.python.org/issue18304
+	if "w3.org" in t.name:
+		t.name = t.name.split("}")[1]
 	if isinstance(t, XsdAtomicBuiltin):
 		t.cpp_type = atomic_builtins[t.name]
 	elif isinstance(t, XsdAtomicRestriction):
-		anno_type_restriction(t)
+		anno_restriction(t)
 	# Just read xs:lists into a string for now.
 	# That simplifies validation and keeps heap allocation to nodes only.
 	# VPR just reads list types into a string, too.
 	elif isinstance(t, XsdList):
 		t.cpp_type = "const char *"
 	elif isinstance(t, XsdUnion):
-		anno_type_union(t)
+		anno_union(t)
 	else:
 		raise NotImplementedError("I don't know what to do with type %s." % t)
 
-def anno_type_complex_type(t: XsdComplexType) -> None:
+def anno_complex_type(t: XsdComplexType) -> None:
 	if getattr(t, "cpp_type", None) is not None: return
 	t.cpp_type = to_cpp_type(t.name)
 
@@ -274,7 +233,7 @@ def anno_type_complex_type(t: XsdComplexType) -> None:
 	t.attribute_list = list(dict.fromkeys(t.attributes.values()))
 	for attr in t.attribute_list:
 		assert attr.use != "prohibited"
-		anno_type_simple_type(attr.type)
+		anno_simple_type(attr.type)
 
 	t.model = None
 	t.child_elements = []
@@ -286,24 +245,24 @@ def anno_type_complex_type(t: XsdComplexType) -> None:
 			t.dfa = dfa_from_group(t.content_type)
 		else:
 			raise NotImplementedError("Model group %s is not supported." % t.content_type.model)
-		t.child_elements = anno_type_group(t.content_type)
+		t.child_elements = anno_group(t.content_type)
 	if t.has_simple_content():
-		anno_type_simple_type(t.content_type)
+		anno_simple_type(t.content_type)
 
 # Annotate the schema with cpp_types of every complex and simple type.
 # Put aside anonymous complex types, enums and unions for generating actual type declaration.
 for t in types:
-	anno_type_complex_type(t)
+	anno_complex_type(t)
 
-for e in elements:
-	anno_type_element(e)
+for el in root_elements:
+	anno_element(el)
 
 # Sort types by tree height.
 def key_ctype(x: XsdComplexType, visited=None):
 	if not visited: visited=set()
 	if x in visited: return 0
 	else: visited.add(x)
-	return max([0] + [key_ctype(y.type, visited) for y in x.child_elements]) + 1
+	return max([0] + [key_ctype(y.type, visited) for y in getattr(x, "child_elements", [])]) + 1
 
 types += anonymous_complex_types
 types.sort(key=key_ctype)
@@ -328,8 +287,7 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 		out += "%s %s;\n" % (attr.type.cpp_type, checked(attr.name))
 	for child in t.child_elements:
 		if child.many:
-			out += "int num_%s;\n" % child.name
-			out += "%s * %s_list;\n" % (child.cpp_type, child.name)
+			out += "collapsed_vec<%s, %s_pool> %s;\n" % (child.cpp_type, child.type.name, pluralize(child.name))
 		else:
 			if child.optional:
 				out += "bool has_%s;\n" % child.name
@@ -340,11 +298,9 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 	out = "struct %s {\n" % t.cpp_type + indent(out) + "};\n"
 	return out
 
-struct_declarations = ""
-struct_definitions = ""
-for t in types:
-	struct_declarations += "struct %s;\n" % t.cpp_type
-	struct_definitions += typedefn_from_complex_type(t)
+# Put the types found so far in unions in an enum. This is our enum of type tags.
+simple_types = sorted(simple_types, key=lambda x: x.name)
+type_tag_definition = "enum class type_tag {%s};\n" % ", ".join(set([to_token(t.cpp_type) for t in simple_types]))
 
 unions = list(dict.fromkeys(unions))
 union_definitions = ""
@@ -352,13 +308,19 @@ for u in unions:
 	struct_declarations += "struct %s;\n" % u.cpp_type
 	union_definitions += typedefn_from_union(u) + "\n"
 
-element_definitions = ""
-for e in elements:
-	element_definitions += "%s %s = {};\n" % (e.cpp_type, e.name)
+struct_declarations = ""
+struct_definitions = ""
+for t in types:
+	struct_declarations += "struct %s;\n" % t.cpp_type
+	struct_definitions += typedefn_from_complex_type(t)
 
-# Put the types found so far in unions in an enum. This is our enum of type tags.
-simple_types = sorted(simple_types, key=lambda x: x.name)
-type_tag_definition = "enum class type_tag {%s};\n" % ", ".join(set([to_token(t.cpp_type) for t in simple_types]))
+root_element_declarations = ""
+for el in root_elements:
+	root_element_declarations += "class %s : public %s {\n" % (el.name, el.cpp_type)
+	root_element_declarations += "public:\n"
+	root_element_declarations += "\tpugi::xml_parse_result load(std::istream &is);\n"
+	root_element_declarations += "\tvoid write(std::ostream &os);\n"
+	root_element_declarations += "};\n"
 
 count_fn_declarations = ""
 for t in types:
@@ -368,10 +330,20 @@ load_fn_declarations = ""
 for t in types:
 	load_fn_declarations += "void load_%s(const pugi::xml_node &root, %s *out);\n" % (t.name, t.cpp_type)
 
-arena_declarations = ""
-for t in sorted(arena_types, key=lambda x: x.name):
-	arena_declarations += "int g_num_%s = 0;\n" % t.name
-	arena_declarations += "%s *%s_arena;\n" % (t.cpp_type, t.name)
+#
+
+pool_types = list(dict.fromkeys(pool_types))
+pool_declarations = ""
+extern_pool_declarations = ""
+for t in pool_types:
+	extern_pool_declarations += "extern std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
+	pool_declarations += "std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
+
+clear_pools_declaration = "void clear_pools(void);\n"
+clear_pools_definition = "void clear_pools(void){\n"
+for t in pool_types:
+	clear_pools_definition += "\t%s_pool.clear();\n" % t.name
+clear_pools_definition += "}\n"
 
 #
 
@@ -382,7 +354,7 @@ def tokens_from_enum(t: XsdAtomicRestriction) -> str:
 	lookup_tokens = ["\"UXSD_INVALID\""]
 	lookup_tokens += ["\"%s\"" % x for x in t.validators[0].enumeration]
 	out += "enum class %s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
-	out += "const char *lookup_%s[] = {%s};\n" % (t.name, ", ".join(lookup_tokens))
+	out += "static const char *lookup_%s[] = {%s};\n" % (t.name, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_enum(t: XsdAtomicRestriction) -> str:
@@ -392,7 +364,7 @@ def lexer_from_enum(t: XsdAtomicRestriction) -> str:
 	triehash_alph = [(x, "%s::%s" % (t.cpp_type, to_token(x))) for x in t.validators[0].enumeration]
 	out += indent(triehash.gen_lexer_body(triehash_alph))
 	out += "\tif(throw_on_invalid)\n"
-	out += "\t\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \"of %s.\");\n" % t.cpp_type
+	out += "\t\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \" of %s.\");\n" % t.cpp_type
 	out += "\treturn %s::UXSD_INVALID;\n" % t.cpp_type
 	out += "}\n"
 	return out
@@ -457,75 +429,6 @@ def _gen_dfa_table(t: XsdGroup) -> str:
 	out += "};\n"
 	return out
 
-def _gen_count_dfa(t: XsdGroup) -> str:
-	out = ""
-	out += "int next, state=%d;\n" % t.dfa.start
-	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
-	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp_type
-	out += "\tif(next == -1) dfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n"  % (t.cpp_type, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
-	out += "\tstate = next;\n"
-
-	out += "\tswitch(in){\n";
-	for el in t.child_elements:
-		if not isinstance(el.type, XsdComplexType): continue
-		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_token(el.name))
-		out += "\t\tcount_%s(node);\n" % el.type.name
-		if el.many: out += "\t\tg_num_%s++;\n" % el.type.name
-		out += "\t\tbreak;\n"
-	out += "\tdefault: break; /* Not possible. */\n"
-	out += "\t}\n";
-
-	reject_cond = " && ".join(["state != %d" % x for x in t.dfa.accepts])
-	out += "}\n"
-	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n" % (reject_cond, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
-	return out
-
-# Mostly the same thing with _gen_load_attr.
-# Looks like it's planned in XSD 1.0 for alls to be implemented in the same way
-# with attributes.
-def _gen_count_all(t: XsdGroup) -> str:
-	out = ""
-	N = len(t.child_elements)
-	out += "std::bitset<%d> gstate = 0;\n" % N
-	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
-	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
-	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
-
-	out += "\tswitch(in){\n";
-	for el in t.child_elements:
-		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_token(el.name))
-		out += "\t\tcount_%s(node);\n" % el.type.name
-		out += "\t\tbreak;\n"
-	out += "\tdefault: break; /* Not possible. */\n"
-	out += "\t}\n";
-	out += "}\n"
-
-	mask = "".join(["1" if x.occurs[0] == 0 else "0" for x in t.child_elements][::-1])
-	out += "std::bitset<%d> test_state = gstate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_state.all()) all_error(test_state, gtok_lookup_%s);\n" % t.cpp_type
-	return out
-
-def count_fn_from_complex_type(t: XsdComplexType) -> str:
-	out = ""
-	out += "void count_%s(const pugi::xml_node &root){\n" % t.name
-	if t.model == "all":
-		out += indent(_gen_count_all(t))
-	elif t.model == "dfa":
-		out = _gen_dfa_table(t) + out
-		out += indent(_gen_count_dfa(t))
-	else:
-		out += "\tif(root.first_child().type() == pugi::node_element) throw std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
-	out += "}\n"
-	return out
-
-count_fn_definitions = ""
-for t in types:
-	count_fn_definitions += count_fn_from_complex_type(t) + "\n"
-
-#
-
 # TODO: Find a cleaner way to load unions.
 def _gen_load_union(t: XsdUnion, container: str, input: str) -> str:
 	out = ""
@@ -547,13 +450,13 @@ def _gen_load_union(t: XsdUnion, container: str, input: str) -> str:
 
 # See https://stackoverflow.com/questions/26080829/detecting-strtol-failure
 # Since detecting additional characters require some other hoops which would
-# hurt performance, we only detect errors using errno.
+# hurt performance, we only check errno.
 def _gen_load_simple(t: XsdSimpleType, container: str, input: str) -> str:
 	out = ""
 	if isinstance(t, XsdAtomicBuiltin):
 		out += "%s = %s;\n" % (container, atomic_builtin_load_formats[t.name] % input)
 		out += "if(errno != 0)\n"
-		out += "\tthrow std::runtime_error(\"Invalid value `\" + std::string(%s) + \"` to load a %s into %s.\");" % (input, t.cpp_type, container)
+		out += "\tthrow std::runtime_error(\"Invalid value `\" + std::string(%s) + \"` to load a %s into %s.\");\n" % (input, t.cpp_type, container)
 	elif isinstance(t, XsdAtomicRestriction):
 		out += "%s = lex_%s(%s, true);\n" % (container, t.name, input)
 	elif isinstance(t, XsdList):
@@ -564,34 +467,56 @@ def _gen_load_simple(t: XsdSimpleType, container: str, input: str) -> str:
 		raise NotImplementedError("I don't know how to load %s." % t)
 	return out
 
-def _gen_load_element_complex(t: XsdElement, parent: str="") -> str:
+def _gen_load_element_complex(t: XsdElement, parent: str) -> str:
 	out = ""
-	container = "%s%s" % ("%s->" % parent if parent else "", t.name)
 	if t.many:
-		out += "load_%s(node, &%s_arena[g_num_%s]);\n" % (t.type.name, t.type.name, t.type.name)
-		out += "g_num_%s++;\n" % t.type.name
-		out += "%s->num_%s++;\n" % (parent, t.name)
+		out += "%s->%s.push_back(%s());\n" % (parent, pluralize(t.name), t.cpp_type)
+		out += "load_%s(node, &%s->%s.back());\n" % (t.type.name, parent, pluralize(t.name))
 	else:
-		out += "load_%s(node, &%s);\n" % (t.type.name, container)
+		out += "load_%s(node, &%s->%s);\n" % (t.type.name, parent, t.name)
 		if t.optional:
 			out += "%s->has_%s = 1;\n" % (parent, t.name)
 	return out
 
-def _gen_load_element(t: XsdElement, parent: str="") -> str:
+def _gen_load_element_simple(t: XsdElement, parent: str) -> str:
+	out = ""
+	if t.many:
+		container = "%s->%s" % (parent, pluralize(t.name))
+		out += "%s.push_back(0);\n" % container
+		out += _gen_load_simple(t.type, "%s.back()" % container, "node.child_value()")
+	else:
+		container = "%s->%s" % (parent, t.name)
+		out += _gen_load_simple(t.type, container, "node.child_value()")
+	return out
+
+def _gen_load_element(t: XsdElement, parent: str) -> str:
 	if isinstance(t.type, XsdComplexType):
 		return _gen_load_element_complex(t, parent)
-	elif isinstance(t.type, XsdAtomicBuiltin):
-		container = "%s%s" % ("%s->" % parent if parent else "", t.name)
-		return "%s = %s;\n" % (container, atomic_builtin_load_formats[t.type.name] % "node.child_value()")
 	else:
-		raise NotImplementedError("I don't know how to load %s." % t.type)
+		return _gen_load_element_simple(t, parent)
 
-def _gen_load_group(t: XsdGroup) -> str:
+def _gen_load_dfa(t: XsdGroup) -> str:
+	"""Partial function to generate the child element validation&loading portion
+	of a C++ function load_foo, if the model group is an xs:sequence or xs:choice.
+
+	xs:sequence/xs:choice groups can be compiled down to a finite automaton.
+	This is done in dfa.py. C++ state table is generated in _gen_dfa_table and the
+	stream of child elements are validated according to the table here.
+
+	The C++ table has -1s in place of invalid state transitions. If we step into a -1,
+	we call dfa_error. We check again at the end of input. If we aren't in an accepted
+	state, we again call dfa_error."""
 	out = ""
-	for el in [x for x in t.child_elements if x.many]:
-		out += "out->%s_list = &%s_arena[g_num_%s];\n" % (el.name, el.type.name, el.type.name)
+
+	out += "int next, state=%d;\n" % t.dfa.start
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
 	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
+
+	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp_type
+	out += "\tif(next == -1)\n"
+	out += "\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n"\
+					% (t.cpp_type, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
+	out += "\tstate = next;\n"
 
 	out += "\tswitch(in){\n";
 	for el in t.child_elements:
@@ -601,10 +526,49 @@ def _gen_load_group(t: XsdGroup) -> str:
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
 
+	reject_cond = " && ".join(["state != %d" % x for x in t.dfa.accepts])
 	out += "}\n"
+	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n"\
+			% (reject_cond, t.cpp_type, t.cpp_type, len(t.dfa.alphabet))
+
+	return out
+
+def _gen_load_all(t: XsdGroup) -> str:
+	"""Partial function to generate the child element validation&loading portion
+	of a C++ function load_foo, if the model group is an xs:all.
+
+	xs:alls can be validated in a similar fashion to xs:attributes. We maintain a
+	bitset of which elements are found. At the end, we OR our bitset with the value
+	corresponding to the optional elements and check if all bits in it are set. If not,
+	we call attr_error with the token lookup table and the OR'd bitset."""
+	out = ""
+	N = len(t.child_elements)
+
+	out += "std::bitset<%d> gstate = 0;\n" % N
+	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
+	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp_type, t.cpp_type)
+
+	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
+	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
+
+	out += "\tswitch(in){\n";
+	for el in t.child_elements:
+		out += "\tcase gtok_%s::%s:\n" % (t.cpp_type, to_token(el.name))
+		out += indent(_gen_load_element(el, "out"), 2)
+		out += "\t\tbreak;\n"
+	out += "\tdefault: break; /* Not possible. */\n"
+	out += "\t}\n";
+	out += "}\n"
+
+	mask = "".join(["1" if x.occurs[0] == 0 else "0" for x in t.child_elements][::-1])
+	out += "std::bitset<%d> test_gstate = gstate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
+	out += "if(!test_gstate.all()) all_error(test_gstate, gtok_lookup_%s);\n" % t.cpp_type
+
 	return out
 
 def _gen_load_attrs(t: XsdGroup) -> str:
+	"""Partial function to generate the attribute loading portion of a C++
+	function load_foo. See _gen_load_all to see how attributes are validated."""
 	out = ""
 	N = len(t.attribute_list)
 	out += "std::bitset<%d> astate = 0;\n" % N
@@ -623,65 +587,64 @@ def _gen_load_attrs(t: XsdGroup) -> str:
 	out += "}\n"
 
 	mask = "".join(["1" if x.use == "optional" else "0" for x in t.attribute_list][::-1])
-	out += "std::bitset<%d> test_state = astate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_state.all()) attr_error(test_state, atok_lookup_%s);\n" % t.cpp_type
+	out += "std::bitset<%d> test_astate = astate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
+	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_%s);\n" % t.cpp_type
 	return out
 
 def load_fn_from_complex_type(t: XsdComplexType) -> str:
+	"""Generate a full C++ function load_foo(&root, *out)
+	which can load an XSD complex type from DOM &root into C++ type *out."""
 	out = ""
+
 	out += "void load_%s(const pugi::xml_node &root, %s *out){\n" % (t.name, t.cpp_type)
-	if t.model:
-		out += indent(_gen_load_group(t))
+	if t.model == "dfa":
+		out = _gen_dfa_table(t) + out
+		out += indent(_gen_load_dfa(t))
+	elif t.model == "all":
+		out += indent(_gen_load_all(t))
 	elif t.has_simple_content():
 		out += indent(_gen_load_simple(t.content_type, "out->value", "root.child_value()"))
+	else:
+		out += "\tif(root.first_child().type() == pugi::node_element)\n"
+		out += "\t\tthrow std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
 
+	out += "\n"
 	if t.attributes:
 		out += indent(_gen_load_attrs(t))
 	else:
-		out += "\tif(root.first_attribute()) throw std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
+		out += "\tif(root.first_attribute())\n"
+		out += "\t\tthrow std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
 
 	out += "}\n"
 	return out
 
-load_fn_definitions = ""
-for t in types:
-	load_fn_definitions += load_fn_from_complex_type(t) + "\n"
+load_fn_definitions = "\n".join([load_fn_from_complex_type(t) for t in types])
 
 #
 
-def gen_alloc_arenas() -> str:
+def load_fn_from_root_element(el: XsdElement) -> str:
 	out = ""
-	out += "void alloc_arenas(void){\n"
-	for t in sorted(arena_types, key=lambda x: x.name):
-		out += "\tif(!(%s_arena = (%s *)std::calloc(g_num_%s, sizeof(%s))))\n" % (t.name, t.cpp_type, t.name, t.cpp_type)
-		out += "\t\tthrow std::runtime_error(\"Couldn't get memory for <%s> arena.\");\n" % t.name
-	for t in sorted(arena_types, key=lambda x: x.name):
-		out += "\tg_num_%s = 0;\n" % t.name
-	out += "}\n"
-	return out
-
-# TODO: I think there can be multiple root elements of the same kind.
-# TODO: Add support for root elements which can appear more than once.
-def gen_init_fn() -> str:
-	out = ""
-	out += "void get_root_element(const char *filename){\n"
+	out += "pugi::xml_parse_result %s::load(std::istream &is){\n" % checked(el.name)
 	out += "\tpugi::xml_document doc;\n"
-	out += "\tpugi::xml_parse_result result = doc.load_file(filename);\n"
-	out += "\tif(!result)\n"
-	out += "\t\tthrow std::runtime_error(\"Could not load XML file \" + std::string(filename) + \".\");\n"
+	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
+	out += "\tif(!result) return result;\n"
 	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
 
-	for i, el in enumerate(elements):
-		out += "\t\t%s(std::strcmp(node.name(), \"%s\") == 0){\n" % ("if" if i == 0 else "else if", el.name)
-		out += "\t\t\tcount_%s(node);\n" % el.name
-		out += "\t\t\talloc_arenas();\n"
-		out += indent(_gen_load_element(el), 3)
-		out += "\t\t}\n"
-	out += "\t\telse throw std::runtime_error(\"Invalid root-level element \" + std::string(node.name()));\n"
+	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % el.name
+	out += "\t\t\t/* If errno is set up to this point, it messes with strtol errno checking. */\n"
+	out += "\t\t\terrno = 0;\n"
+	out += "\t\t\tload_%s(node, this);\n" % el.name
 
+	out += "\t\t}\n"
+	out += "\t\telse throw std::runtime_error(\"Invalid root-level element \" + std::string(node.name()));\n"
 	out += "\t}\n"
+	out += "\treturn result;\n"
 	out += "}\n"
 	return out
+
+root_element_definitions = ""
+for el in root_elements:
+	root_element_definitions += load_fn_from_root_element(el) + "\n"
 
 #
 
@@ -718,125 +681,250 @@ def _gen_write_attr(a: XsdAttribute, container: str) -> str:
 		out += indent(_gen_write_simple(a.type, new_container, a.name))
 	return out
 
-# TODO: We always emit attributes with nonzero default values for now.
+# We always emit attributes with nonzero default values for now.
 # If not, we would have to check against the nonzero value, which creates
 # another case split for strings, enums, unions...
-def _gen_write_element(el: XsdElement, container: str, level: int=0) -> str:
+def _gen_write_element(el: XsdElement, container: str) -> str:
 	out = ""
-	i = chr(ord('i')+level)
-	if el.type.attribute_list:
-		out += "os << \"<%s\";\n" % el.name
-		for a in el.type.attribute_list:
-			out += _gen_write_attr(a, container)
-		out += "os << \">\";\n"
-	else:
+	if isinstance(el.type, XsdSimpleType):
 		out += "os << \"<%s>\";\n" % el.name
-
-	for e in el.type.child_elements:
-		if e.many:
-			out += "for(int %c=0; %c<%s.num_%s; %c++){\n" % (i, i, container, e.name, i)
-			out += "\tauto &%s = %s.%s_list[%c];\n" % (checked(e.name), container, e.name, i)
-			out += indent(_gen_write_element(e, checked(e.name), level+1))
-			out += "}\n"
+		out += _gen_write_simple(el.type, container)
+		out += "os << \"</%s>\";\n" % el.name
+	else:
+		if el.type.attribute_list:
+			out += "os << \"<%s\";\n" % el.name
+			for a in el.type.attribute_list:
+				out += _gen_write_attr(a, container)
+			out += "os << \">\";\n"
 		else:
-			new_container = "%s.%s" % (container, e.name)
-			if e.optional:
-				out += "if(%s.has_%s){\n" % (container, e.name)
-				out += indent(_gen_write_element(e, new_container, level+1))
+			out += "os << \"<%s>\";\n" % el.name
+
+		for e in el.type.child_elements:
+			if e.many:
+				out += "for(auto &%s: %s.%s){\n" % (checked(e.name), container, pluralize(e.name))
+				out += indent(_gen_write_element(e, checked(e.name)))
 				out += "}\n"
 			else:
-				out += _gen_write_element(e, new_container, level+1)
-	if el.type.has_simple_content():
-		out += _gen_write_simple(el.type.content_type, el.name+".value")
-	out += "os << \"</%s>\";\n" % el.name
+				new_container = "%s.%s" % (container, e.name)
+				if e.optional:
+					out += "if(%s.has_%s){\n" % (container, e.name)
+					out += indent(_gen_write_element(e, new_container))
+					out += "}\n"
+				else:
+					out += _gen_write_element(e, new_container)
+		if el.type.has_simple_content():
+			out += _gen_write_simple(el.type.content_type, el.name+".value")
+		out += "os << \"</%s>\";\n" % el.name
 	return out
 
-def gen_write_fn(t: XsdElement) -> str:
+def write_fn_from_element(t: XsdElement) -> str:
 	out = ""
-	out += "void write_root_element(std::ostream &os){\n"
+	out += "void %s::write(std::ostream &os){\n" % checked(t.name)
 	out += "\t/* Print floating points with max double precision. */\n"
 	out += "\tos.precision(std::numeric_limits<double>::max_digits10);\n"
-	out += indent(_gen_write_element(t, t.name, 0))
+	out += indent(_gen_write_element(t, "(*this)"))
 	out += "}\n"
 	return out
 
+for el in root_elements:
+	root_element_definitions += write_fn_from_element(el) + "\n"
+
 #
 
-print("#include <bitset>")
-print("#include <cstring>")
-print("#include <iostream>")
-print("#include <limits>")
-print("#include <memory>")
-print("#include <string>")
-print("#include <vector>")
-print("")
-print("#include <error.h>")
-print("#include <stddef.h>")
-print("#include <stdint.h>")
-print("#include \"pugixml.hpp\"")
-print("")
+# Don't emit functions for these if not needed.
+has_dfa = bool([x for x in types if x.model == "dfa"])
+has_attr = bool([x for x in types if x.attributes])
+has_all = bool([x for x in types if x.model == "all"])
+has_pool = bool(pool_types)
 
-print("/* All uxsdcxx functions and structs live in this namespace. */")
-print("namespace %s {\n" % namespace)
+# Template-ish for header file. We use a bunch of file.writes and f-strings here.
+# Jinja2 is really not worth the trouble but we do want some control over our
+# template - don't write one more newline if we have no pools.
 
-print(triehash.gen_prelude())
+header_file = open(header_file_name, "w")
 
-if struct_declarations: print(struct_declarations)
-if enum_tokens: print(enum_tokens)
-if simple_types: print(type_tag_definition)
-if union_definitions: print(union_definitions)
-if struct_definitions: print(struct_definitions)
+header_file.write(f"""#include <bitset>
+#include <cassert>
+#include <cstring>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
 
-if arena_declarations: print(arena_declarations)
-print(count_fn_declarations)
-print(load_fn_declarations)
-print(builtin_fn_declarations)
+#include <error.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "pugixml.hpp"
 
-print("/**")
-print(" * Tokens for attribute and node names.")
-print("**/")
-print(complex_type_tokens)
+/*
+ * This file is generated by uxsdcxx.
+ * Modify only if your build process doesn't involve regenerating this file.
+ *
+ * Cmdline: { " ".join(sys.argv) }
+ * Input file: { file_name }
+ * md5sum of input file: { md5(file_name) }
+ */
 
-print("/**")
-print(" * Lexing functions. These convert the const char *s of PugiXML to enums.")
-print(" * You may find numerous \"break\"s there. Without them, a warning explosion ensues.")
-print("**/")
-if enum_lexers: print(enum_lexers)
-print(complex_type_lexers)
+/* All uxsdcxx functions and structs live in this namespace. */
+namespace uxsd {{
 
-if [x for x in types if x.model == "dfa"]: print(dfa_error_fn)
-if [x for x in types if x.attributes]: print(attr_error_fn)
-if [x for x in types if x.model == "all"]: print(all_error_fn)
+{ triehash.gen_prelude() }
+""")
 
-print("/**")
-print(" * Validating&counting functions. These do the tree validation and count elements to allocate arenas.")
-print("**/")
-print(count_fn_definitions)
+header_file.write("""
+/* Stores a vector of elements in a shared pool. Consists
+ * of an offset into the pool and a size. It's faster than a regular
+ * vector, but one can only insert into it when it's the last vector
+ * in the pool. */
+template<class T, std::vector<T> &pool>
+class collapsed_vec {
+public:
+	uint32_t size;
+	uint32_t offset;
+	collapsed_vec(){
+		size = 0;
+		offset = pool.size();
+	}
+	T& back(){
+		return pool[offset+size-1];
+	}
+	T* begin(){
+		return &pool[offset];
+	}
+	T* end(){
+		return &pool[offset+size];
+	}
+	T& operator[](uint32_t i){
+		return pool[offset+i];
+	}
+	void push_back(const T &x){
+		assert(size+offset == pool.size());
+		pool.push_back(x);
+		size++;
+	}
+};
+""")
 
-print("/**")
-print(" * This allocates space for the complex types which can occur more than once.")
-print(" * It resets the global type counters for use with loading functions.")
-print("**/")
-print(gen_alloc_arenas())
+header_file.write("/* Forward declaration of generated data types. Needed for the pools. */\n")
+if struct_declarations: header_file.write(struct_declarations+"\n")
 
-print("/**")
-print(" * Loading functions. These load the DOM data into the generated structures.")
-print("**/")
-print(load_fn_definitions, end="")
+header_file.write("/* Global shared pools for storing multiply-occurring elements. */\n")
+header_file.write(extern_pool_declarations+"\n\n")
 
-print("/**")
-print(" * Global variable to hold the root element.")
-print("**/")
-print(element_definitions)
+header_file.write("/* Helper function for freeing the pools. */\n")
+header_file.write(clear_pools_declaration+"\n")
 
-print("/**")
-print(" * Load into root element from file.")
-print("**/")
-print(gen_init_fn())
+header_file.write("/* Data type definitions generated from the XSD schema. */\n")
+if enum_tokens: header_file.write(enum_tokens+"\n")
+if simple_types: header_file.write(type_tag_definition+"\n")
+if union_definitions: header_file.write(union_definitions+"\n")
+if struct_definitions: header_file.write(struct_definitions+"\n")
+header_file.write(root_element_declarations+"\n")
 
-print("/**")
-print(" * Write to output stream from root element.")
-print("**/")
-print(gen_write_fn(elements[0]))
+header_file.write("/* Loading functions. They validate the DOM data\n")
+header_file.write(" * and load it into the generated structures. */\n")
+header_file.write(load_fn_declarations+"\n")
 
-print("} /* namespace %s */\n" % namespace)
+if has_dfa:
+	header_file.write("void dfa_error(const char *wrong, int *states, const char **lookup, int len);\n")
+if has_all:
+	header_file.write("template<std::size_t N>\n")
+	header_file.write("void all_error(std::bitset<N> gstate, const char **lookup);\n")
+if has_attr:
+	header_file.write("template<std::size_t N>\n")
+	header_file.write("void attr_error(std::bitset<N> astate, const char **lookup);\n")
+
+header_file.write("} /* namespace uxsd */\n")
+
+header_file.close()
+
+# Template-ish for impl file.
+
+impl_file = open(impl_file_name, "w")
+
+impl_file.write(f"""#include "{ header_file_name }"
+
+/*
+ * This file is generated by uxsdcxx.
+ * Modify only if your build process doesn't involve regenerating this file.
+ *
+ * Cmdline: { " ".join(sys.argv) }
+ * Input file: { file_name }
+ * md5sum of input file: { md5(file_name) }
+ */
+
+/* All uxsdcxx functions and structs live in this namespace. */
+namespace uxsd {{
+
+{ pool_declarations }
+
+{ clear_pools_definition }
+
+{ root_element_definitions }
+
+/* Tokens for attribute and node names. */
+{ complex_type_tokens }
+
+/* Lexing functions. These convert the const char *s of PugiXML to enums.
+ * You may find numerous \"break\"s there. Without them, a warning explosion ensues. */
+{ enum_lexers }
+{ complex_type_lexers }
+
+/* Loading functions. They validate the DOM data and load it into the generated structures. */
+{ load_fn_definitions }
+""")
+
+if has_dfa:
+	impl_file.write("""
+void dfa_error(const char *wrong, int *states, const char **lookup, int len){
+	std::vector<std::string> expected;
+	for(int i=0; i<len; i++){
+		if(states[i] != -1) expected.push_back(lookup[i]);
+	}
+
+	std::string expected_or = expected[0];
+	for(unsigned int i=1; i<expected.size(); i++)
+		expected_or += std::string(" or ") + expected[i];
+
+	throw std::runtime_error("Expected " + expected_or + ", found " + std::string(wrong));
+}
+""")
+
+if has_attr:
+	impl_file.write("""
+template<std::size_t N>
+void attr_error(std::bitset<N> astate, const char **lookup){
+	std::vector<std::string> missing;
+	for(unsigned int i=0; i<N; i++){
+		if(astate[i] == 0) missing.push_back(lookup[i]);
+	}
+
+	std::string missing_and = missing[0];
+	for(unsigned int i=1; i<missing.size(); i++)
+		missing_and += std::string(", ") + missing[i];
+
+	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
+}
+""")
+
+if has_all:
+	impl_file.write("""
+/* runtime error for <xs:all>s */
+template<std::size_t N>
+void all_error(std::bitset<N> gstate, const char **lookup){
+	std::vector<std::string> missing;
+	for(unsigned int i=0; i<N; i++){
+		if(gstate[i] == 0) missing.push_back(lookup[i]);
+	}
+
+	std::string missing_and = missing[0];
+	for(unsigned int i=1; i<missing.size(); i++)
+		missing_and += std::string(", ") + missing[i];
+
+	throw std::runtime_error("Didn't find required elements " + missing_and + ".");
+}
+""")
+
+impl_file.write("} /* namespace uxsd */\n")
+impl_file.close()

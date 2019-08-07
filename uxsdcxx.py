@@ -29,6 +29,7 @@ from typing import List, Tuple, Dict, Set, Union
 from dfa import dfa_from_group
 from third_party import triehash
 
+# See https://www.obj-sys.com/docs/xbv23/CCppUsersGuide/ch04.html.
 atomic_builtins = {
 	"string": "const char *",
 	"boolean": "bool",
@@ -103,11 +104,11 @@ unions = []
 
 # Simple types found inside unions.
 # We generate a special "types" enum from this, to put in all tagged union type definitions.
-simple_types = set()
+simple_types = []
 
 # In C++ code, we have to allocate global pools for types which can occur more than once,
 # so that we can avoid lots of reallocs on the heap.
-pool_types = set()
+pool_types = []
 
 # Get all global user-defined types.
 types: List[XsdComplexType] = [v for k, v in schema.types.items() if "w3.org" not in k and isinstance(v, XsdComplexType)]
@@ -123,15 +124,15 @@ def md5(fname):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
-# Check against keywords, warn and rename if necessary.
 def checked(x: str) -> str:
+	"""Check against keywords, warn and rename if necessary."""
 	if x in cpp_keywords:
 		print("%s is a C++ keyword. Changing it to %s_." % (x, x), file=sys.stderr)
 		return x + "_"
 	return x
 
-# Convert type name to C++ type. Elements can have builtins as types.
 def to_cpp_type(x: str) -> str:
+	"""Convert type name to C++ type. Elements can have builtins as types."""
 	if x in atomic_builtins: return atomic_builtins[x]
 	else: return "t_%s" % x
 
@@ -144,8 +145,8 @@ def to_union_member_type(x: str) -> str:
 def indent(x: str, n: int=1) -> str:
 	return "\n".join(["\t"*n + line if line else "" for line in x.split("\n")])
 
-# Rudimentary pluralization function. It's used to name lists of things.
 def pluralize(x: str) -> str:
+	"""Rudimentary pluralization function. It's used to name lists of things."""
 	if x[-2:] in ["sh", "ch", "ss"]: return x+"es"
 	elif x[-1:] in ["s", "x", "z"]: return x+"es"
 	else: return x+"s"
@@ -154,6 +155,8 @@ def pluralize(x: str) -> str:
 
 # Annotate the xmlschema tree with convenient data structures, such as ordered
 # access to children and attributes, C++ types of complex types etc.
+# Add the relevant types to the lists for anonymous complex types, enums and unions.
+
 def anno_element(t: XsdElement, many=False, optional=False) -> None:
 	if getattr(t, "cpp_type", None) is not None: return
 
@@ -174,9 +177,9 @@ def anno_element(t: XsdElement, many=False, optional=False) -> None:
 	t.optional = optional
 	t.cpp_type = t.type.cpp_type
 	if many:
-		pool_types.add(t.type)
+		pool_types.append(t.type)
 
-# Return a list of elements in the group to aid complex type annotation.
+# Returns a list of elements in the group to aid complex type annotation.
 def anno_group(t: XsdGroup, many=False, optional=False) -> List[XsdElement]:
 	out = []
 	if t.occurs[1] is None or t.occurs[1] > 1: many = True
@@ -203,12 +206,15 @@ def anno_union(t: XsdUnion) -> None:
 	t.cpp_type = "union_%s" % t.name
 	for m in t.member_types:
 		anno_simple_type(m)
-		simple_types.add(m)
+		simple_types.append(m)
 	unions.append(t)
 
-# See https://www.obj-sys.com/docs/xbv23/CCppUsersGuide/ch04.html.
 def anno_simple_type(t: XsdSimpleType) -> None:
-	# https://bugs.python.org/issue18304
+	"""Annotate a simple type with a C++ type name.
+
+	Also remove the namespace prefix from its name assigned by xmlschema:
+	https://bugs.python.org/issue18304
+	"""
 	if "w3.org" in t.name:
 		t.name = t.name.split("}")[1]
 	if isinstance(t, XsdAtomicBuiltin):
@@ -249,8 +255,6 @@ def anno_complex_type(t: XsdComplexType) -> None:
 	if t.has_simple_content():
 		anno_simple_type(t.content_type)
 
-# Annotate the schema with cpp_types of every complex and simple type.
-# Put aside anonymous complex types, enums and unions for generating actual type declaration.
 for t in types:
 	anno_complex_type(t)
 
@@ -269,9 +273,19 @@ types.sort(key=key_ctype)
 
 #
 
-# Generate a tagged union type.
-# "types" is a reserved enum which is generated from the atomic builtins.
 def typedefn_from_union(t: XsdUnion) -> str:
+	"""Generate a C++ declaration of a type-tagged union.
+
+	struct union_foo {
+		type_tag tag;
+		union {
+			double as_double;
+			int as_int;
+		}
+	}
+	type_tag is a special enum which is generated from the sum of the
+	simple types seen so far in unions.
+	"""
 	out = "struct %s {\n" % t.cpp_type
 	out += "\ttype_tag tag;\n"
 	out += "\tunion {\n"
@@ -282,6 +296,15 @@ def typedefn_from_union(t: XsdUnion) -> str:
 	return out
 
 def typedefn_from_complex_type(t: XsdComplexType) -> str:
+	"""Generate a C++ declaration of a struct, corresponding to a XsdComplexType.
+
+	struct t_foo {
+		int bar;
+		bool has_my_baz;
+		t_bar my_baz;
+		collapsed_vec<t_quux, quux_pool> quuxes;
+	}
+	"""
 	out = ""
 	for attr in t.attribute_list:
 		out += "%s %s;\n" % (attr.type.cpp_type, checked(attr.name))
@@ -298,9 +321,8 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 	out = "struct %s {\n" % t.cpp_type + indent(out) + "};\n"
 	return out
 
-# Put the types found so far in unions in an enum. This is our enum of type tags.
-simple_types = sorted(simple_types, key=lambda x: x.name)
-type_tag_definition = "enum class type_tag {%s};\n" % ", ".join(set([to_token(t.cpp_type) for t in simple_types]))
+simple_types = list(dict.fromkeys(simple_types))
+type_tag_definition = "enum class type_tag {%s};\n" % ", ".join([to_token(t.cpp_type) for t in simple_types])
 
 unions = list(dict.fromkeys(unions))
 union_definitions = ""
@@ -348,16 +370,32 @@ clear_pools_definition += "}\n"
 #
 
 def tokens_from_enum(t: XsdAtomicRestriction) -> str:
+	"""Generate C++ enum of token values from an XsdAtomicRestriction."""
 	out = ""
 	enum_tokens = ["UXSD_INVALID = 0"]
 	enum_tokens += [to_token(x) for x in t.validators[0].enumeration]
+	out += "enum class %s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
+	return out
+
+def lookup_from_enum(t: XsdAtomicRestriction) -> str:
+	"""Generate C++ lookup table of tokens to strings from an XsdAtomicRestriction."""
+	out = ""
 	lookup_tokens = ["\"UXSD_INVALID\""]
 	lookup_tokens += ["\"%s\"" % x for x in t.validators[0].enumeration]
-	out += "enum class %s {%s};\n" % (t.cpp_type, ", ".join(enum_tokens))
-	out += "static const char *lookup_%s[] = {%s};\n" % (t.name, ", ".join(lookup_tokens))
+	out += "const char *lookup_%s[] = {%s};\n" % (t.name, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_enum(t: XsdAtomicRestriction) -> str:
+	"""Generate a C++ function to convert const char *s to enum values generated
+	from an XsdAtomicRestriction.
+
+	It's in the form of enum_foo lex_foo(const char *in, bool throw_on_invalid)
+	and currently uses a trie to parse the string.
+	throw_on_invalid is a hacky parameter to determine if we should throw on
+	an invalid value. It's currently necessary to read unions - we don't need to
+	throw on an invalid value if we are trying to read into an union but we need
+	to throw otherwise.
+	"""
 	assert t.cpp_type.startswith("enum")
 	out = ""
 	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp_type, t.name)
@@ -370,6 +408,9 @@ def lexer_from_enum(t: XsdAtomicRestriction) -> str:
 	return out
 
 def tokens_from_complex_type(t: XsdComplexType) -> str:
+	"""Generate one or two C++ enums of token values from an XsdComplexType.
+	One enum is generated from valid attribute names and the other from child element names.
+	"""
 	out = ""
 	if t.child_elements:
 		enum_tokens = [to_token(e.name) for e in t.child_elements]
@@ -384,6 +425,13 @@ def tokens_from_complex_type(t: XsdComplexType) -> str:
 	return out
 
 def lexer_from_complex_type(t: XsdComplexType) -> str:
+	"""Generate one or two C++ functions to convert const char *s to enum values
+	generated from an XsdComplexType.
+
+	It's in the form of (a|g)tok_foo (a|g)lex_foo(const char *in) and currently uses
+	a trie to parse the string. a or g indicates if the token is an attribute token or a group
+	(child element) token.
+	"""
 	out = ""
 	if t.child_elements:
 		out += "inline gtok_%s glex_%s(const char *in){\n" % (t.cpp_type, t.cpp_type)
@@ -405,6 +453,10 @@ enum_tokens = ""
 for e in enums:
 	enum_tokens += tokens_from_enum(e)
 
+enum_lookups = ""
+for e in enums:
+	enum_lookups += lookup_from_enum(e)
+
 enum_lexers = ""
 for e in enums:
 	enum_lexers += lexer_from_enum(e) + "\n"
@@ -420,6 +472,12 @@ for t in types:
 #
 
 def _gen_dfa_table(t: XsdGroup) -> str:
+	"""Generate a 2D C++ array representing DFA table from an XsdGroup.dfa.
+
+	"dfa" property is generated and assigned to XsdGroups in anno_type_element.
+	The array is indexed by the state and input token value, such that table[state][input]
+	gives the next state.
+	"""
 	out = ""
 	out += "int gstate_%s[%d][%d] = {\n" % (t.cpp_type, len(t.dfa.states), len(t.dfa.alphabet))
 	for i in range(0, max(t.dfa.states)+1):
@@ -648,10 +706,12 @@ for el in root_elements:
 
 #
 
-# We use a parameter to emit squashed attribute writes
-# ex. `os << "index=\"" << y_list.index << "\"";`
-# so that we don't generate 1e14 lines of code.
 def _gen_write_simple(t: XsdSimpleType, container: str, attr_name: str="") -> str:
+	"""Partial function to generate code which writes out a simple type.
+
+	The attr_name parameter is passed by _gen_write_attr so that we can
+	generate squashed code like `os << "index=\"" << y_list.index << "\"";`.
+	"""
 	out = ""
 	if isinstance(t, XsdAtomicBuiltin) or isinstance(t, XsdList):
 		if attr_name:
@@ -672,6 +732,7 @@ def _gen_write_simple(t: XsdSimpleType, container: str, attr_name: str="") -> st
 	return out
 
 def _gen_write_attr(a: XsdAttribute, container: str) -> str:
+	"""Partial function to generate code which writes out a single XML attribute."""
 	out = ""
 	new_container = "%s.%s" % (container, a.name)
 	if a.use == "required" or a.default:
@@ -681,10 +742,15 @@ def _gen_write_attr(a: XsdAttribute, container: str) -> str:
 		out += indent(_gen_write_simple(a.type, new_container, a.name))
 	return out
 
-# We always emit attributes with nonzero default values for now.
-# If not, we would have to check against the nonzero value, which creates
-# another case split for strings, enums, unions...
 def _gen_write_element(el: XsdElement, container: str) -> str:
+	"""Partial function to generate C++ code for writing out a struct generated
+	from an XsdElement as XML.
+
+	Currently, all values with non-zero default values are emitted anyway.
+	Otherwise, we would have to check against the nonzero value, and the
+	check would create a case split for all simple types again.(how to compare
+	unions? strings? doubles?)
+	"""
 	out = ""
 	if isinstance(el.type, XsdSimpleType):
 		out += "os << \"<%s>\";\n" % el.name
@@ -839,7 +905,8 @@ header_file.write("} /* namespace uxsd */\n")
 
 header_file.close()
 
-# Template-ish for impl file.
+#
+# Template-ish for implementation file.
 
 impl_file = open(impl_file_name, "w")
 
@@ -860,6 +927,9 @@ namespace uxsd {{
 { pool_declarations }
 
 { clear_pools_definition }
+
+/* Lookup tables for enums. */
+{ enum_lookups }
 
 { root_element_definitions }
 

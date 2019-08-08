@@ -1,6 +1,3 @@
-# Script to convert an XSD schema to a C++ struct definition and
-# a parser based on PugiXML.
-
 from pprint import pprint
 
 import hashlib
@@ -52,7 +49,7 @@ atomic_builtins = {
 }
 
 atomic_builtin_load_formats = {
-	"string": "strdup(%s)",
+	"string": "string_pool.add(%s)",
 	"boolean": "std::strtol(%s, NULL, 10)",
 	"float": "std::strtof(%s, NULL)",
 	"decimal": "std::strtol(%s, NULL, 10)",
@@ -109,6 +106,9 @@ simple_types = []
 # In C++ code, we have to allocate global pools for types which can occur more than once,
 # so that we can avoid lots of reallocs on the heap.
 pool_types = []
+
+# A special pool should be generated for strings.
+has_string_pool = False
 
 # Get all global user-defined types.
 types: List[XsdComplexType] = [v for k, v in schema.types.items() if "w3.org" not in k and isinstance(v, XsdComplexType)]
@@ -214,10 +214,14 @@ def anno_simple_type(t: XsdSimpleType) -> None:
 
 	Also remove the namespace prefix from its name assigned by xmlschema:
 	https://bugs.python.org/issue18304
+	Set has_string_pool if at least one string is found.
 	"""
+	global has_string_pool
 	if "w3.org" in t.name:
 		t.name = t.name.split("}")[1]
 	if isinstance(t, XsdAtomicBuiltin):
+		if t.name == "string":
+			has_string_pool = True
 		t.cpp_type = atomic_builtins[t.name]
 	elif isinstance(t, XsdAtomicRestriction):
 		anno_restriction(t)
@@ -274,7 +278,7 @@ types.sort(key=key_ctype)
 #
 
 def typedefn_from_union(t: XsdUnion) -> str:
-	"""Generate a C++ declaration of a type-tagged union.
+	"""Generate a C++ decl of a type-tagged union.
 
 	struct union_foo {
 		type_tag tag;
@@ -296,7 +300,7 @@ def typedefn_from_union(t: XsdUnion) -> str:
 	return out
 
 def typedefn_from_complex_type(t: XsdComplexType) -> str:
-	"""Generate a C++ declaration of a struct, corresponding to a XsdComplexType.
+	"""Generate a C++ decl of a struct, corresponding to a XsdComplexType.
 
 	struct t_foo {
 		int bar;
@@ -322,50 +326,58 @@ def typedefn_from_complex_type(t: XsdComplexType) -> str:
 	return out
 
 simple_types = list(dict.fromkeys(simple_types))
-type_tag_definition = "enum class type_tag {%s};\n" % ", ".join([to_token(t.cpp_type) for t in simple_types])
+type_tag_defn = "enum class type_tag {%s};\n" % ", ".join([to_token(t.cpp_type) for t in simple_types])
 
 unions = list(dict.fromkeys(unions))
-union_definitions = ""
+union_defns = ""
 for u in unions:
-	struct_declarations += "struct %s;\n" % u.cpp_type
-	union_definitions += typedefn_from_union(u) + "\n"
+	struct_decls += "struct %s;\n" % u.cpp_type
+	union_defns += typedefn_from_union(u) + "\n"
 
-struct_declarations = ""
-struct_definitions = ""
+struct_decls = ""
+struct_defns = ""
 for t in types:
-	struct_declarations += "struct %s;\n" % t.cpp_type
-	struct_definitions += typedefn_from_complex_type(t)
+	struct_decls += "struct %s;\n" % t.cpp_type
+	struct_defns += typedefn_from_complex_type(t)
 
-root_element_declarations = ""
+root_element_decls = ""
 for el in root_elements:
-	root_element_declarations += "class %s : public %s {\n" % (el.name, el.cpp_type)
-	root_element_declarations += "public:\n"
-	root_element_declarations += "\tpugi::xml_parse_result load(std::istream &is);\n"
-	root_element_declarations += "\tvoid write(std::ostream &os);\n"
-	root_element_declarations += "};\n"
+	root_element_decls += "class %s : public %s {\n" % (el.name, el.cpp_type)
+	root_element_decls += "public:\n"
+	root_element_decls += "\tpugi::xml_parse_result load(std::istream &is);\n"
+	root_element_decls += "\tvoid write(std::ostream &os);\n"
+	root_element_decls += "};\n"
 
-count_fn_declarations = ""
+count_fn_decls = ""
 for t in types:
-	count_fn_declarations += "void count_%s(const pugi::xml_node &root);\n" % t.name
+	count_fn_decls += "void count_%s(const pugi::xml_node &root);\n" % t.name
 
-load_fn_declarations = ""
+load_fn_decls = ""
 for t in types:
-	load_fn_declarations += "void load_%s(const pugi::xml_node &root, %s *out);\n" % (t.name, t.cpp_type)
+	load_fn_decls += "void load_%s(const pugi::xml_node &root, %s *out);\n" % (t.name, t.cpp_type)
 
 #
 
 pool_types = list(dict.fromkeys(pool_types))
-pool_declarations = ""
-extern_pool_declarations = ""
+pool_decls = ""
+extern_pool_decls = ""
 for t in pool_types:
-	extern_pool_declarations += "extern std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
-	pool_declarations += "std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
+	extern_pool_decls += "extern std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
+	pool_decls += "std::vector<%s> %s_pool;\n" % (t.cpp_type, t.name)
 
-clear_pools_declaration = "void clear_pools(void);\n"
-clear_pools_definition = "void clear_pools(void){\n"
+clear_pools_decl = "void clear_pools(void);\n"
+clear_pools_defn = "void clear_pools(void){\n"
 for t in pool_types:
-	clear_pools_definition += "\t%s_pool.clear();\n" % t.name
-clear_pools_definition += "}\n"
+	clear_pools_defn += "\t%s_pool.clear();\n" % t.name
+clear_pools_defn += "}\n"
+
+extern_string_pool_decl = "extern string_pool_impl string_pool;\n"
+string_pool_decl = "string_pool_impl string_pool;\n"
+
+clear_string_pool_decl = "void clear_string_pool(void);\n"
+clear_string_pool_defn = "void clear_string_pool(void){\n"
+clear_string_pool_defn += "\tstring_pool.clear();\n"
+clear_string_pool_defn += "}\n"
 
 #
 
@@ -518,7 +530,7 @@ def _gen_load_simple(t: XsdSimpleType, container: str, input: str) -> str:
 	elif isinstance(t, XsdAtomicRestriction):
 		out += "%s = lex_%s(%s, true);\n" % (container, t.name, input)
 	elif isinstance(t, XsdList):
-		out += "%s = strdup(%s);\n" % (container, input)
+		out += "%s = string_pool.add(%s);\n" % (container, input)
 	elif isinstance(t, XsdUnion):
 		out += _gen_load_union(t, container, input)
 	else:
@@ -563,7 +575,8 @@ def _gen_load_dfa(t: XsdGroup) -> str:
 
 	The C++ table has -1s in place of invalid state transitions. If we step into a -1,
 	we call dfa_error. We check again at the end of input. If we aren't in an accepted
-	state, we again call dfa_error."""
+	state, we again call dfa_error.
+	"""
 	out = ""
 
 	out += "int next, state=%d;\n" % t.dfa.start
@@ -598,7 +611,8 @@ def _gen_load_all(t: XsdGroup) -> str:
 	xs:alls can be validated in a similar fashion to xs:attributes. We maintain a
 	bitset of which elements are found. At the end, we OR our bitset with the value
 	corresponding to the optional elements and check if all bits in it are set. If not,
-	we call attr_error with the token lookup table and the OR'd bitset."""
+	we call attr_error with the token lookup table and the OR'd bitset.
+	"""
 	out = ""
 	N = len(t.child_elements)
 
@@ -626,7 +640,8 @@ def _gen_load_all(t: XsdGroup) -> str:
 
 def _gen_load_attrs(t: XsdGroup) -> str:
 	"""Partial function to generate the attribute loading portion of a C++
-	function load_foo. See _gen_load_all to see how attributes are validated."""
+	function load_foo. See _gen_load_all to see how attributes are validated.
+	"""
 	out = ""
 	N = len(t.attribute_list)
 	out += "std::bitset<%d> astate = 0;\n" % N
@@ -651,7 +666,8 @@ def _gen_load_attrs(t: XsdGroup) -> str:
 
 def load_fn_from_complex_type(t: XsdComplexType) -> str:
 	"""Generate a full C++ function load_foo(&root, *out)
-	which can load an XSD complex type from DOM &root into C++ type *out."""
+	which can load an XSD complex type from DOM &root into C++ type *out.
+	"""
 	out = ""
 
 	out += "void load_%s(const pugi::xml_node &root, %s *out){\n" % (t.name, t.cpp_type)
@@ -676,7 +692,7 @@ def load_fn_from_complex_type(t: XsdComplexType) -> str:
 	out += "}\n"
 	return out
 
-load_fn_definitions = "\n".join([load_fn_from_complex_type(t) for t in types])
+load_fn_defns = "\n".join([load_fn_from_complex_type(t) for t in types])
 
 #
 
@@ -700,9 +716,9 @@ def load_fn_from_root_element(el: XsdElement) -> str:
 	out += "}\n"
 	return out
 
-root_element_definitions = ""
+root_element_defns = ""
 for el in root_elements:
-	root_element_definitions += load_fn_from_root_element(el) + "\n"
+	root_element_defns += load_fn_from_root_element(el) + "\n"
 
 #
 
@@ -793,7 +809,7 @@ def write_fn_from_element(t: XsdElement) -> str:
 	return out
 
 for el in root_elements:
-	root_element_definitions += write_fn_from_element(el) + "\n"
+	root_element_defns += write_fn_from_element(el) + "\n"
 
 #
 
@@ -845,52 +861,120 @@ header_file.write("""
  * in the pool. */
 template<class T, std::vector<T> &pool>
 class collapsed_vec {
+private:
+	uint32_t _size;
+	uint32_t _offset;
 public:
-	uint32_t size;
-	uint32_t offset;
-	collapsed_vec(){
-		size = 0;
-		offset = pool.size();
+	inline collapsed_vec(){
+		_size = 0;
+		_offset = pool.size();
 	}
-	T& back(){
-		return pool[offset+size-1];
+	inline T& back(){
+		return pool[_offset+_size-1];
 	}
-	T* begin(){
-		return &pool[offset];
+	inline T* begin(){
+		return &pool[_offset];
 	}
-	T* end(){
-		return &pool[offset+size];
+	inline T* end(){
+		return &pool[_offset+_size];
 	}
-	T& operator[](uint32_t i){
-		return pool[offset+i];
+	inline T& operator[](uint32_t i){
+		return pool[_offset+i];
 	}
-	void push_back(const T &x){
-		assert(size+offset == pool.size());
+	inline void push_back(const T &x){
+		assert(_size+_offset == pool.size());
 		pool.push_back(x);
-		size++;
+		_size++;
+	}
+	inline uint32_t size(){
+		return _size;
+	}
+};
+
+/* A pool of strings. It exposes an add(const char *x) function
+ * which is like a better strdup.
+ * add() calls strlen on the argument to see how much space is needed.
+ * Then it checks its vector of chunks to see if there is a chunk it
+ * would fit into. If none is found, a new one is allocated with a size of
+ * max(length of string, last chunk's size*2). */
+class string_pool_impl {
+private:
+	const uint32_t INITIAL_SIZE = 1024;
+	struct chunk {
+		uint32_t used;
+		uint32_t size;
+		char * mem;
+	};
+	std::vector<chunk> chunks;
+public:
+	string_pool_impl(){
+		chunk c;
+		c.used = 0;
+		c.size = INITIAL_SIZE;
+		c.mem = (char *)std::malloc(INITIAL_SIZE);
+		chunks.emplace_back(c);
+	}
+	~string_pool_impl(){
+		for(auto &c: chunks)
+			free(c.mem);
+	}
+	const char *add(const char *x){
+		uint32_t len = std::strlen(x)+1;
+		char *out;
+		for(auto &c: chunks){
+			if(c.used+len <= c.size){
+				out = &c.mem[c.used];
+				c.used += len;
+				std::memcpy(out, x, len);
+				return out;
+			}
+		}
+		chunk n;
+		n.used = 0;
+		n.size = std::max(chunks.back().size*2, len);
+		n.mem = (char *)std::malloc(n.size);
+		std::memcpy(n.mem, x, len);
+		chunks.emplace_back(n);
+		return n.mem;
+	}
+	void clear(){
+		for(int i=1; i<chunks.size(); i++){
+			free(chunks[i].mem);
+		}
+		chunks.resize(1);
+		chunks[0].used = 0;
+		std::memset(chunks[0].mem, 0, INITIAL_SIZE);
 	}
 };
 """)
 
-header_file.write("/* Forward declaration of generated data types. Needed for the pools. */\n")
-if struct_declarations: header_file.write(struct_declarations+"\n")
+header_file.write("/* Forward decl of generated data types. Needed for the pools. */\n")
+if struct_decls: header_file.write(struct_decls+"\n")
 
 header_file.write("/* Global shared pools for storing multiply-occurring elements. */\n")
-header_file.write(extern_pool_declarations+"\n\n")
+header_file.write(extern_pool_decls+"\n")
+
+if has_string_pool:
+	header_file.write(extern_string_pool_decl+"\n\n")
 
 header_file.write("/* Helper function for freeing the pools. */\n")
-header_file.write(clear_pools_declaration+"\n")
+header_file.write(clear_pools_decl+"\n")
 
-header_file.write("/* Data type definitions generated from the XSD schema. */\n")
+if has_string_pool:
+	header_file.write("/* One may want to use the allocated strings after loading, so this\n")
+	header_file.write(" * function is provided separately.\n")
+	header_file.write(clear_string_pool_decl+"\n")
+
+header_file.write("/* Data type defns generated from the XSD schema. */\n")
 if enum_tokens: header_file.write(enum_tokens+"\n")
-if simple_types: header_file.write(type_tag_definition+"\n")
-if union_definitions: header_file.write(union_definitions+"\n")
-if struct_definitions: header_file.write(struct_definitions+"\n")
-header_file.write(root_element_declarations+"\n")
+if simple_types: header_file.write(type_tag_defn+"\n")
+if union_defns: header_file.write(union_defns+"\n")
+if struct_defns: header_file.write(struct_defns+"\n")
+header_file.write(root_element_decls+"\n")
 
 header_file.write("/* Loading functions. They validate the DOM data\n")
 header_file.write(" * and load it into the generated structures. */\n")
-header_file.write(load_fn_declarations+"\n")
+header_file.write(load_fn_decls+"\n")
 
 if has_dfa:
 	header_file.write("void dfa_error(const char *wrong, int *states, const char **lookup, int len);\n")
@@ -924,14 +1008,16 @@ impl_file.write(f"""#include "{ header_file_name }"
 /* All uxsdcxx functions and structs live in this namespace. */
 namespace uxsd {{
 
-{ pool_declarations }
+{ pool_decls }
+{ string_pool_decl if has_string_pool else "" }
 
-{ clear_pools_definition }
+{ clear_pools_defn }
+{ clear_string_pool_defn if has_string_pool else "" }
 
 /* Lookup tables for enums. */
 { enum_lookups }
 
-{ root_element_definitions }
+{ root_element_defns }
 
 /* Tokens for attribute and node names. */
 { complex_type_tokens }
@@ -942,7 +1028,7 @@ namespace uxsd {{
 { complex_type_lexers }
 
 /* Loading functions. They validate the DOM data and load it into the generated structures. */
-{ load_fn_definitions }
+{ load_fn_defns }
 """)
 
 if has_dfa:

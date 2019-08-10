@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from pprint import pprint
 
 import hashlib
@@ -176,7 +178,7 @@ def anno_element(t: XsdElement, many=False, optional=False) -> None:
 	t.many = many
 	t.optional = optional
 	t.cpp_type = t.type.cpp_type
-	if many:
+	if many and not t.type.name == "string":
 		pool_types.append(t.type)
 
 # Returns a list of elements in the group to aid complex type annotation.

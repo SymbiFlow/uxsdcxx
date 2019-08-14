@@ -932,7 +932,7 @@ public:
 			}
 		}
 		chunk n;
-		n.used = 0;
+		n.used = len;
 		n.size = std::max(chunks.back().size*2, len);
 		n.mem = (char *)std::malloc(n.size);
 		std::memcpy(n.mem, x, len);
@@ -940,7 +940,7 @@ public:
 		return n.mem;
 	}
 	void clear(){
-		for(int i=1; i<chunks.size(); i++){
+		for(uint32_t i=1; i<chunks.size(); i++){
 			free(chunks[i].mem);
 		}
 		chunks.resize(1);
@@ -964,7 +964,7 @@ header_file.write(clear_pools_decl+"\n")
 
 if has_string_pool:
 	header_file.write("/* One may want to use the allocated strings after loading, so this\n")
-	header_file.write(" * function is provided separately.\n")
+	header_file.write(" * function is provided separately. */\n")
 	header_file.write(clear_string_pool_decl+"\n")
 
 header_file.write("/* Data type defns generated from the XSD schema. */\n")

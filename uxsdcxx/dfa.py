@@ -3,18 +3,18 @@
 # * Translate our NFA to automata-lib's NFA.
 # * Using automata-lib, convert the NFA to a DFA.
 # * Using python-automata, minify the DFA.
-# * Rename the DFA states. Map trap states to None.
+# * Rename the DFA states.
 # * Return the DFA, where it would be emitted as C++ code.
 
-import xmlschema
-from xmlschema.validators import (
+import xmlschema # type: ignore
+from xmlschema.validators import ( # type: ignore
     XsdElement,
     XsdGroup
 )
 
-from automata.fa.dfa import DFA
-from automata.fa.nfa import NFA
-from third_party.DFA import DFA as pDFA
+from automata.fa.dfa import DFA # type: ignore
+from automata.fa.nfa import NFA # type: ignore
+from .third_party.DFA import DFA as pDFA # type: ignore
 
 from itertools import permutations
 from typing import List, Tuple, Dict, Set, Union
@@ -76,7 +76,7 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	# |-----c->
 	def _nfa_from_choice(t: XsdGroup) -> Tuple[str, Set[str]]:
 		x = _new_state()
-		vacants = set()
+		vacants: Set[str] = set()
 		for e in t._group:
 			init, vacant = _nfa_from_node(e)
 			_add_transition(x, "", init)
@@ -125,7 +125,7 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	for f in finals:
 		_patch(f, final)
 
-	input_symbols = set()
+	input_symbols: Set[str] = set()
 	for v in _nfa_state_transitions.values():
 		input_symbols |= set(v.keys())
 	# Remove epsilon from the alphabet.

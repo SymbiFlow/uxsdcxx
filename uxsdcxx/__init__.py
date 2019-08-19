@@ -126,7 +126,7 @@ def lexer_from_enum(t: UxsdEnum) -> str:
 	"""Generate a C++ function to convert const char *s to enum values generated
 	from an UxsdEnum.
 
-	It's in the form of enum_foo lex_foo(const char *in, bool throw_on_invalid)
+	It's in the form of enum_foo lex_enum_foo(const char *in, bool throw_on_invalid)
 	and currently uses a trie to parse the string.
 	throw_on_invalid is a hacky parameter to determine if we should throw on
 	an invalid value. It's currently necessary to read unions - we don't need to
@@ -134,7 +134,7 @@ def lexer_from_enum(t: UxsdEnum) -> str:
 	to throw otherwise.
 	"""
 	out = ""
-	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp, t.name)
+	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp, t.cpp)
 	triehash_alph = [(x, "%s::%s" % (t.cpp, utils.to_token(x))) for x in t.enumeration]
 	out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 	out += "\tif(throw_on_invalid)\n"
@@ -164,19 +164,19 @@ def lexer_from_complex_type(t: UxsdComplex) -> str:
 	"""Generate one or two C++ functions to convert const char *s to enum values
 	generated from an UxsdComplex.
 
-	It's in the form of (a|g)tok_foo (a|g)lex_foo(const char *in) and currently uses
+	It's in the form of (a|g)tok_foo lex_(attr|node)_foo(const char *in) and currently uses
 	a trie to parse the string. a or g indicates if the token is an attribute token or a group
 	(child element) token.
 	"""
 	out = ""
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		out += "inline gtok_%s glex_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline gtok_%s lex_node_%s(const char *in){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(e.name, "gtok_%s::%s" % (t.cpp, utils.to_token(e.name))) for e in t.content.children]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 		out += "\tthrow std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
 		out += "}\n"
 	if t.attrs:
-		out += "inline atok_%s alex_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline atok_%s lex_attr_%s(const char *in){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(x.name, "atok_%s::%s" % (t.cpp, utils.to_token(x.name))) for x in t.attrs]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 		out += "\tthrow std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
@@ -194,11 +194,16 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	assert isinstance(t.content, UxsdDfa)
 	dfa = t.content.dfa
 	out = ""
-	out += "int gstate_%s[%d][%d] = {\n" % (t.cpp, len(dfa.states), len(dfa.alphabet))
+	out += "static const int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
+	out += "static const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
+	out += "int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
 	for i in range(0, max(dfa.states)+1):
-		state = dfa.transitions[i]
-		row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
-		out += "\t{%s},\n" % ", ".join(row)
+		nexts = dfa.transitions[i]
+		out += "\t{\n"
+		for j, x in enumerate(dfa.alphabet):
+			next = nexts[x] if nexts.get(x, None) is not None else -1
+			out += "\t\t[%d /* gtok_%s::%s */] = %d,\n" % (j, t.cpp, utils.to_token(x), next)
+		out += "\t},\n"
 	out += "};\n"
 	return out
 
@@ -213,7 +218,7 @@ def _gen_load_union(t: UxsdUnion, container: str, input: str) -> str:
 			out += "if(errno == 0)\n"
 			out += "\tbreak;\n"
 		elif isinstance(m, UxsdEnum):
-			out += "%s = lex_%s(%s, false);\n" % (new_container, m.name, input)
+			out += "%s = lex_%s(%s, false);\n" % (new_container, m.cpp, input)
 			out += "if(%s != %s::UXSD_INVALID)\n" % (new_container, m.cpp)
 			out += "break;\n"
 		else:
@@ -231,7 +236,7 @@ def _gen_load_simple(t: UxsdSimple, container: str, input: str) -> str:
 		out += "if(errno != 0)\n"
 		out += "\tthrow std::runtime_error(\"Invalid value `\" + std::string(%s) + \"` to load a %s into %s.\");\n" % (input, t.cpp, container)
 	elif isinstance(t, UxsdEnum):
-		out += "%s = lex_%s(%s, true);\n" % (container, t.name, input)
+		out += "%s = lex_%s(%s, true);\n" % (container, t.cpp, input)
 	elif isinstance(t, UxsdUnion):
 		out += _gen_load_union(t, container, input)
 	else:
@@ -285,7 +290,7 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 	out = ""
 	out += "int next, state=%d;\n" % dfa.start
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
 
 	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp
 	out += "\tif(next == -1)\n"
@@ -323,7 +328,7 @@ def _gen_load_all(t: UxsdComplex) -> str:
 
 	out += "std::bitset<%d> gstate = 0;\n" % N
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = glex_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
 
 	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
 	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
@@ -352,7 +357,7 @@ def _gen_load_attrs(t: UxsdComplex) -> str:
 	out = ""
 	out += "std::bitset<%d> astate = 0;\n" % N
 	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
-	out += "\tatok_%s in = alex_%s(attr.name());\n" % (t.cpp, t.cpp)
+	out += "\tatok_%s in = lex_attr_%s(attr.name());\n" % (t.cpp, t.cpp)
 	out += "\tif(astate[(int)in] == 0) astate[(int)in] = 1;\n"
 	out += "\telse throw std::runtime_error(\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\");\n" % t.name
 
@@ -534,10 +539,9 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 	out += templates.collapsed_vec_defn
 	out += templates.string_pool_defn
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {\n\n"
-	out += triehash.gen_prelude()
+	out += "namespace uxsd {"
 
-	out += "\n/* Forward decl of generated data types. Needed for the pools.\n"
+	out += "\n\n/* Forward decl of generated data types. Needed for the pools.\n"
 	out += " * The types are sorted according to tree height, so that the \"root type\"\n"
 	out += " * appears last and we don't get any \"incomplete type\" errors. */\n"
 	struct_decls = ["struct %s;" % t.cpp for t in schema.unions] + ["struct %s;" % t.cpp for t in schema.complex_types]
@@ -591,7 +595,8 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 	out += templates.header_comment.substitute(x)
 	out += "#include \"%s\"" % header_file_name
 	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {\n"
+	out += "namespace uxsd {\n\n"
+	out += triehash.gen_prelude()
 
 	out += "\n/* Declarations for internal load functions for the root elements. */\n"
 	load_fn_decls = []

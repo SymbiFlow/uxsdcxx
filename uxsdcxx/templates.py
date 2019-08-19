@@ -27,10 +27,12 @@ includes = """
 """
 
 collapsed_vec_defn = """
-/* Stores a vector of elements in a shared pool. Consists
+/**
+ * Stores a vector of elements in a shared pool. Consists
  * of an offset into the pool and a size. It's faster than a regular
  * vector, but one can only insert into it when it's the last vector
- * in the pool. */
+ * in the pool.
+ */
 template<class T, std::vector<T> &pool>
 class collapsed_vec {
 private:
@@ -65,12 +67,14 @@ public:
 """
 
 string_pool_defn = """
-/* A pool of strings. It exposes an add(const char *x) function
+/**
+ * A pool of strings. It exposes an add(const char *x) function
  * which is like a better strdup.
  * add() calls strlen on the argument to see how much space is needed.
  * Then it checks its vector of chunks to see if there is a chunk it
  * would fit into. If none is found, a new one is allocated with a size of
- * max(length of string, last chunk's size*2). */
+ * max(length of string, last chunk's size*2).
+ */
 class string_pool_impl {
 private:
 	const uint32_t INITIAL_SIZE = 1024;
@@ -123,15 +127,24 @@ public:
 """
 
 dfa_error_decl = """
+/**
+ * Internal error function for xs:choice and xs:sequence validators.
+ */
 void dfa_error(const char *wrong, int *states, const char **lookup, int len);
 """
 
 all_error_decl = """
+/**
+ * Internal error function for xs:all validators.
+ */
 template<std::size_t N>
 void all_error(std::bitset<N> gstate, const char **lookup);
 """
 
 attr_error_decl = """
+/**
+ * Internal error function for attribute validators.
+ */
 template<std::size_t N>
 void attr_error(std::bitset<N> astate, const char **lookup);
 """
@@ -152,7 +165,6 @@ void dfa_error(const char *wrong, int *states, const char **lookup, int len){
 """
 
 all_error_defn = """
-/* runtime error for <xs:all>s */
 template<std::size_t N>
 void all_error(std::bitset<N> gstate, const char **lookup){
 	std::vector<std::string> missing;

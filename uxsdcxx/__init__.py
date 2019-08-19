@@ -1,4 +1,4 @@
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 import os
 import sys
@@ -12,6 +12,11 @@ from .third_party import triehash
 def typedefn_from_union(t: UxsdUnion) -> str:
 	"""Generate a C++ definition of a type-tagged union.
 
+	Example:
+	/**
+	 * Generated from:
+	 * <xs:union... />
+	*/
 	struct union_foo {
 		type_tag tag;
 		union {
@@ -22,7 +27,11 @@ def typedefn_from_union(t: UxsdUnion) -> str:
 	type_tag is a special enum which is generated from the sum of the
 	simple types seen so far in unions.
 	"""
-	out = "struct %s {\n" % t.cpp
+	out = ""
+	out += "/** Generated from:\n"
+	out += utils.to_comment_body(t.source)
+	out += "\n*/\n"
+	out += "struct %s {\n" % t.cpp
 	out += "\ttype_tag tag;\n"
 	out += "\tunion {\n"
 	for e in t.member_types:
@@ -35,6 +44,11 @@ def typedefn_from_union(t: UxsdUnion) -> str:
 def typedefn_from_complex_type(t: UxsdComplex) -> str:
 	"""Generate a C++ struct definition corresponding to a UxsdComplex.
 
+	Example:
+	/**
+	 * Generated from:
+	 * <xs:complexType... />
+	*/
 	struct t_foo {
 		int bar;
 		bool has_my_baz;
@@ -58,7 +72,10 @@ def typedefn_from_complex_type(t: UxsdComplex) -> str:
 		fields.append("%s value;" % t.content.type.cpp)
 
 	out = ""
-	out = "struct %s {\n" % t.cpp
+	out += "/** Generated from:\n"
+	out += utils.to_comment_body(t.source)
+	out += "\n*/\n"
+	out += "struct %s {\n" % t.cpp
 	out += utils.indent("\n".join(fields))
 	out += "\n};"
 	return out
@@ -68,6 +85,9 @@ def typedefn_from_root_element(el: UxsdElement) -> str:
 	which inherits its content type and adds load and write functions.
 	"""
 	out = ""
+	out += "/** Generated from:\n"
+	out += utils.to_comment_body(el.source)
+	out += "\n*/\n"
 	out += "class %s : public %s {\n" % (el.name, el.type.cpp)
 	out += "public:\n"
 	out += "\tpugi::xml_parse_result load(std::istream &is);\n"
@@ -517,7 +537,9 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 	out += "namespace uxsd {\n\n"
 	out += triehash.gen_prelude()
 
-	out += "\n/* Forward decl of generated data types. Needed for the pools. */\n"
+	out += "\n/* Forward decl of generated data types. Needed for the pools.\n"
+	out += " * The types are sorted according to tree height, so that the \"root type\"\n"
+	out += " * appears last and we don't get any \"incomplete type\" errors. */\n"
 	struct_decls = ["struct %s;" % t.cpp for t in schema.unions] + ["struct %s;" % t.cpp for t in schema.complex_types]
 	out += "\n".join(struct_decls)
 
@@ -530,38 +552,32 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 	if schema.has_string_pool:
 		out += "\nextern string_pool_impl string_pool;\n"
 	out += "\n/* Helper function for freeing the pools. */\n"
-	out += "void clear_pools(void);\n"
+	out += "void clear_pools(void);"
 	if schema.has_string_pool:
 		out += "\n/* One may want to use the allocated strings after loading, so this\n"
 		out += " * function is provided separately. */\n"
-		out += "void clear_string_pool(void);\n"
+		out += "void clear_string_pool(void);"
 
-	out += "\n/* Enum tokens generated from XSD enumerations. */\n"
+	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
 	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
 	out += "\n".join(enum_tokens)
 
 	type_tag_tokens = [utils.to_token(x.cpp) for x in schema.simple_types_in_unions]
 	if type_tag_tokens:
-		out += "\n/* Type tag enum for tagged unions. */\n"
+		out += "\n\n/* Type tag enum for tagged unions. */\n"
 		out += "enum class type_tag {%s};\n" % ", ".join(type_tag_tokens)
 
 	union_defns = [typedefn_from_union(t) for t in schema.unions]
 	if union_defns:
-		out += "\n/* Structs generated from  XSD unions. */\n"
-		out += "\n".join(union_defns)
+		out += "\n\n/* Structs generated from  XSD unions. */\n"
+		out += "\n\n".join(union_defns)
 
 	struct_defns = [typedefn_from_complex_type(t) for t in schema.complex_types]
-	out += "\n/* Structs generated from complex types. */\n"
-	out += "\n".join(struct_defns)
+	out += "\n\n/* Structs generated from complex types. */\n\n"
+	out += "\n\n".join(struct_defns)
 	root_element_decls = [typedefn_from_root_element(el) for el in schema.root_elements]
-	out += "\n/* Classes generated from root elements. */\n"
-	out += "\n".join(root_element_decls)
-	if schema.has_dfa:
-		out += templates.dfa_error_decl
-	if schema.has_all:
-		out += templates.all_error_decl
-	if schema.has_attr:
-		out += templates.attr_error_decl
+	out += "\n\n/* Classes generated from root elements. */\n"
+	out += "\n\n".join(root_element_decls)
 	out += "\n} /* namespace uxsd */\n"
 	return out
 
@@ -611,12 +627,20 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 	root_write_defns = [write_fn_from_element(el) for el in schema.root_elements]
 	out += "\n\n/* Write functions for the root elements. */\n"
 	out += "\n".join(root_write_defns)
+
 	complex_type_tokens = [tokens_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Tokens for attribute and node names. */\n"
 	out += "\n".join(complex_type_tokens)
 	complex_type_lexers = [lexer_from_complex_type(t) for t in schema.complex_types]
-	out += "\n\n/* Internal lexing functions. These convert the PugiXML node names to input tokens. */\n"
+	out += "\n\n/* Internal lexers. These convert the PugiXML node names to input tokens. */\n"
 	out += "\n".join(complex_type_lexers)
+
+	if schema.has_dfa:
+		out += templates.dfa_error_decl
+	if schema.has_all:
+		out += templates.all_error_decl
+	if schema.has_attr:
+		out += templates.attr_error_decl
 	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
 	out += "\n".join(complex_type_loaders)

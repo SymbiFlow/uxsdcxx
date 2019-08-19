@@ -77,6 +77,9 @@ def to_token(x: str) -> str:
 def to_union_field_name(x: str) -> str:
 	return "as_%s" % re.sub(r"[^a-zA-Z0-9_]", "_", x)
 
+def to_comment_body(x: str) -> str:
+	return "\n".join([" * " + line for line in x.split("\n") if line])
+
 def indent(x: str, n: int=1) -> str:
 	return "\n".join(["\t"*n + line if line else "" for line in x.split("\n")])
 

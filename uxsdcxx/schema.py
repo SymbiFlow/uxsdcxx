@@ -1,5 +1,8 @@
+import re
+
 from typing import Any, Callable, List, Tuple, Dict, Set, Union, Optional
 from functools import lru_cache
+from xml.etree import ElementTree as ET # type: ignore
 
 import xmlschema # type: ignore
 from xmlschema.validators import ( # type: ignore
@@ -26,16 +29,29 @@ class UxsdType:
 	def __init__(self):
 		raise TypeError("Use child types instead.")
 
+class UxsdSourcable:
+	"""A type for which you can get the corresponding XSD source."""
+	xml_elem: ET.Element
+	@property
+	def source(self) -> str:
+		# Fix ET's indentation and remove the namespace attribute.
+		out = ET.tostring(self.xml_elem).decode()
+		out = re.sub(r'xmlns:xs="(.*?)" ', r'', out)
+		return re.sub(r"  (.*)", r"\1", out)
+	def __init__(self):
+		raise TypeError("Use child types instead.")
+
 class UxsdSimple(UxsdType):
 	def __init__(self):
 		raise TypeError("Use child types instead.")
 
-class UxsdUnion(UxsdSimple):
+class UxsdUnion(UxsdSimple, UxsdSourcable):
 	member_types: List[UxsdSimple]
-	def __init__(self, name, cpp, member_types):
+	def __init__(self, name, cpp, member_types, xml_elem):
 		self.name = name
 		self.cpp = cpp
 		self.member_types = member_types
+		self.xml_elem = xml_elem
 
 class UxsdEnum(UxsdSimple):
 	enumeration: List[str]
@@ -70,16 +86,17 @@ class UxsdAttribute:
 		self.optional = optional
 		self.type = type
 
-class UxsdElement:
+class UxsdElement(UxsdSourcable):
 	name: str
 	many: bool
 	optional: bool
 	type: UxsdType
-	def __init__(self, name, many, optional, type):
+	def __init__(self, name, many, optional, type, xml_elem):
 		self.name = name
 		self.many = many
 		self.optional = optional
 		self.type = type
+		self.xml_elem = xml_elem
 
 class UxsdContentType:
 	def __init__(self):
@@ -102,24 +119,27 @@ class UxsdLeaf(UxsdContentType):
 	def __init__(self, type):
 		self.type = type
 
-class UxsdComplex(UxsdType):
+class UxsdComplex(UxsdType, UxsdSourcable):
 	"""An XSD complex type. It has attributes and content."""
 	attrs: List[UxsdAttribute]
 	content: Optional[UxsdContentType]
-	def __init__(self, name, cpp, attrs, content):
+	def __init__(self, name, cpp, attrs, content, xml_elem):
 		self.name = name
 		self.cpp = cpp
 		self.attrs = attrs
 		self.content = content
+		self.xml_elem = xml_elem
 
 # Helper types.
 UxsdNonstring = Union[UxsdComplex, UxsdUnion, UxsdEnum, UxsdNumber]
 UxsdAny = Union[UxsdType, UxsdContentType, UxsdElement, UxsdAttribute]
 
 class UxsdSchema:
-	"""A schema tree derived from the xmlschema tree.
-	It includes convenient data structures, such as ordered
+	"""A XSD schema tree derived from xmlschema's tree.
+
+	It provides convenient data structures, such as ordered
 	access to children and attributes, C++ type names of complex types etc.
+	This tree assumes it's immutable!
 	"""
 	# All user-defined complex types and root elements.
 	complex_types: List[UxsdComplex] = []
@@ -148,7 +168,8 @@ class UxsdSchema:
 
 	# Build a UxsdSchema out of an XsdSchema using a recursive walk.
 	# We cache the results in a functools.lru_cache of unbounded size to
-	# guarantee that an Xsd* object will always give the same Uxsd* object.
+	# guarantee that an Xsd* object will always give the same Uxsd* object
+	# and will invoke the side effects(fill global lists) only on the first time.
 	@lru_cache(maxsize=None)
 	def visit_group(self, t: XsdGroup, many=False, optional=False) -> List[UxsdElement]:
 		out: List[UxsdElement] = []
@@ -177,7 +198,8 @@ class UxsdSchema:
 		name = t.name
 		if many and isinstance(type, (UxsdComplex, UxsdUnion, UxsdEnum, UxsdNumber)):
 			self.pool_types.append(type)
-		return UxsdElement(name, many, optional, type)
+		xml_elem = t.schema_elem
+		return UxsdElement(name, many, optional, type, xml_elem)
 
 	# Only enumerations are supported as restrictions.
 	@lru_cache(maxsize=None)
@@ -199,7 +221,8 @@ class UxsdSchema:
 			member_types.append(x)
 			self.simple_types_in_unions.append(x)
 		cpp_type = "union_%s" % t.name
-		out = UxsdUnion(t.name, cpp_type, member_types)
+		xml_elem = t.schema_elem
+		out = UxsdUnion(t.name, cpp_type, member_types, xml_elem)
 		self.unions.append(out)
 		return out
 
@@ -267,7 +290,8 @@ class UxsdSchema:
 			type = self.visit_simple_type(t.content_type)
 			content = UxsdLeaf(type)
 
-		out = UxsdComplex(name, cpp_type, attrs, content)
+		xml_elem = t.schema_elem
+		out = UxsdComplex(name, cpp_type, attrs, content, xml_elem)
 		if t.name is None:
 			self.anonymous_complex_types.append(out)
 		return out
@@ -287,15 +311,15 @@ class UxsdSchema:
 		self.pool_types = list(dict.fromkeys(self.pool_types))
 
 		# Collect complex types and sort by tree height.
-		def key_ctype(x: UxsdComplex, visited=None) -> int:
+		def key_type(x: UxsdType, visited=None) -> int:
 			if not visited: visited=set()
 			if x in visited: return 0
 			else: visited.add(x)
-			if isinstance(x.content, UxsdAll) or isinstance(x.content, UxsdDfa):
+			if isinstance(x, UxsdComplex) and isinstance(x.content, (UxsdAll, UxsdDfa)):
 				tree_heights: List[int] = []
 				for child in x.content.children:
 					if isinstance(child.type, UxsdComplex):
-						tree_heights.append(key_ctype(x, visited))
+						tree_heights.append(key_type(x, visited))
 					else:
 						tree_heights.append(1)
 				return max(tree_heights) + 1
@@ -303,7 +327,8 @@ class UxsdSchema:
 				return 1
 
 		self.complex_types += self.anonymous_complex_types
-		self.complex_types.sort(key=key_ctype)
+		self.complex_types.sort(key=key_type)
+		self.pool_types.sort(key=key_type)
 
 	@property
 	def has_dfa(self) -> bool:

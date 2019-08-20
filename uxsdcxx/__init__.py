@@ -198,12 +198,9 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	out += "static const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
 	out += "int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
 	for i in range(0, max(dfa.states)+1):
-		nexts = dfa.transitions[i]
-		out += "\t{\n"
-		for j, x in enumerate(dfa.alphabet):
-			next = nexts[x] if nexts.get(x, None) is not None else -1
-			out += "\t\t[%d /* gtok_%s::%s */] = %d,\n" % (j, t.cpp, utils.to_token(x), next)
-		out += "\t},\n"
+		state = dfa.transitions[i]
+		row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
+		out += "\t{%s},\n" % ", ".join(row)
 	out += "};\n"
 	return out
 
@@ -600,7 +597,7 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 
 	out += "\n/* Declarations for internal load functions for the root elements. */\n"
 	load_fn_decls = []
-	for t in [el.type for el in schema.root_elements]:
+	for t in schema.complex_types:
 		load_fn_decls.append("void load_%s(const pugi::xml_node &root, %s *out);" % (t.name, t.cpp))
 	out += "\n".join(load_fn_decls)
 

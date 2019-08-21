@@ -25,7 +25,7 @@ atomic_builtins = {
 }
 
 atomic_builtin_load_formats = {
-	"string": "string_pool.add(%s)",
+	"string": "char_pool.add(%s)",
 	"boolean": "std::strtol(%s, NULL, 10)",
 	"float": "std::strtof(%s, NULL)",
 	"decimal": "std::strtol(%s, NULL, 10)",

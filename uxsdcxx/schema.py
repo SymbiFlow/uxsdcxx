@@ -64,6 +64,8 @@ class UxsdAtomic(UxsdSimple):
 	@property
 	def cpp_load_format(self) -> str:
 		return utils.atomic_builtin_load_formats[self.name]
+	def __init__(self):
+		raise TypeError("Use child types instead.")
 
 class UxsdNumber(UxsdAtomic):
 	def __init__(self, name):
@@ -130,8 +132,6 @@ class UxsdComplex(UxsdType, UxsdSourcable):
 		self.content = content
 		self.xml_elem = xml_elem
 
-# Helper types.
-UxsdNonstring = Union[UxsdComplex, UxsdUnion, UxsdEnum, UxsdNumber]
 UxsdAny = Union[UxsdType, UxsdContentType, UxsdElement, UxsdAttribute]
 
 class UxsdSchema:
@@ -161,10 +161,10 @@ class UxsdSchema:
 	# In C++ code, we allocate global pools for types
 	# which may occur more than once, so that we can avoid
 	# frequent allocations.
-	pool_types: List[UxsdNonstring] = []
+	pool_types: List[UxsdType] = []
 
 	# A special pool is generated for strings.
-	has_string_pool: bool = False
+	has_string: bool = False
 
 	# Build a UxsdSchema out of an XsdSchema using a recursive walk.
 	# We cache the results in a functools.lru_cache of unbounded size to
@@ -196,7 +196,7 @@ class UxsdSchema:
 			type = self.visit_simple_type(t.type)
 
 		name = t.name
-		if many and isinstance(type, (UxsdComplex, UxsdUnion, UxsdEnum, UxsdNumber)):
+		if many:
 			self.pool_types.append(type)
 		xml_elem = t.schema_elem
 		return UxsdElement(name, many, optional, type, xml_elem)
@@ -233,7 +233,7 @@ class UxsdSchema:
 			name = t.name.split("}")[1]
 		if isinstance(t, XsdAtomicBuiltin):
 			if name == "string":
-				self.has_string_pool = True
+				self.has_string = True
 				return UxsdString()
 			else:
 				return UxsdNumber(name)
@@ -241,6 +241,7 @@ class UxsdSchema:
 			# Just read xs:lists into a string for now.
 			# That simplifies validation and keeps heap allocation to nodes only.
 			# VPR just reads list types into a string, too.
+			self.has_string = True
 			return UxsdString()
 		elif isinstance(t, XsdAtomicRestriction):
 			return self.visit_restriction(t)
@@ -303,7 +304,7 @@ class UxsdSchema:
 		for v in parent.elements.values():
 			self.root_elements.append(self.visit_element(v))
 
-		# The visit_foo functions have side effects, they update schema-wide lists.
+		# The visit* functions have side effects, they update schema-wide lists.
 		# Remove duplicates from schema-wide lists while preserving order.
 		self.enums = list(dict.fromkeys(self.enums))
 		self.unions = list(dict.fromkeys(self.unions))

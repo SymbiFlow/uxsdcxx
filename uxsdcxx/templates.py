@@ -66,16 +66,13 @@ public:
 };
 """
 
-string_pool_defn = """
+char_pool_defn = """
 /**
- * A pool of strings. It exposes an add(const char *x) function
- * which is like a better strdup.
- * add() calls strlen on the argument to see how much space is needed.
- * Then it checks its vector of chunks to see if there is a chunk it
- * would fit into. If none is found, a new one is allocated with a size of
- * max(length of string, last chunk's size*2).
+ * A pool for string data. It manages memory in a vector of chunks
+ * with used and size information. The chunk sizes increase exponentially
+ * with every new chunk.
  */
-class string_pool_impl {
+class char_pool_impl {
 private:
 	const uint32_t INITIAL_SIZE = 1024;
 	struct chunk {
@@ -85,18 +82,23 @@ private:
 	};
 	std::vector<chunk> chunks;
 public:
-	string_pool_impl(){
+	inline char_pool_impl(){
 		chunk c;
 		c.used = 0;
 		c.size = INITIAL_SIZE;
 		c.mem = (char *)std::malloc(INITIAL_SIZE);
 		chunks.emplace_back(c);
 	}
-	~string_pool_impl(){
+	inline ~char_pool_impl(){
 		for(auto &c: chunks)
 			free(c.mem);
 	}
-	const char *add(const char *x){
+	/**
+	 * Copies x into the string pool and returns a pointer to it.
+	 * If x is not small enough to fit in any chunk, a new chunk is
+	 * allocated with the size of max(len(x), last chunk's size*2).
+	 */
+	inline const char *add(const char *x){
 		uint32_t len = std::strlen(x)+1;
 		char *out;
 		for(auto &c: chunks){
@@ -115,7 +117,11 @@ public:
 		chunks.emplace_back(n);
 		return n.mem;
 	}
-	void clear(){
+	/**
+	 * Frees all chunks except the first one and leaves the pool
+	 * in a usable state.
+	 */
+	inline void clear(){
 		for(uint32_t i=1; i<chunks.size(); i++){
 			free(chunks[i].mem);
 		}

@@ -97,7 +97,7 @@ def typedefn_from_root_element(el: UxsdElement) -> str:
 
 #
 
-def gen_clear_pools(ts: List[UxsdNonstring]) -> str:
+def gen_clear_pools(ts: List[UxsdType]) -> str:
 	out = "void clear_pools(void){\n"
 	for t in ts:
 		out += "\t%s_pool.clear();\n" % t.name
@@ -534,7 +534,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 	out += templates.header_comment.substitute(x)
 	out += templates.includes
 	out += templates.collapsed_vec_defn
-	out += templates.string_pool_defn
+	out += templates.char_pool_defn
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {"
 
@@ -550,14 +550,14 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		extern_pool_decls.append("extern std::vector <%s> %s_pool;" % (t.cpp, t.name))
 	out += "\n".join(extern_pool_decls)
 	out += "\n"
-	if schema.has_string_pool:
-		out += "\nextern string_pool_impl string_pool;\n"
+	if schema.has_string:
+		out += "\nextern char_pool_impl char_pool;\n"
 	out += "\n/* Helper function for freeing the pools. */\n"
 	out += "void clear_pools(void);"
-	if schema.has_string_pool:
+	if schema.has_string:
 		out += "\n/* One may want to use the allocated strings after loading, so this\n"
 		out += " * function is provided separately. */\n"
-		out += "void clear_string_pool(void);"
+		out += "void clear_strings(void);"
 
 	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
 	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
@@ -605,14 +605,14 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 	if pool_decls:
 		out += "\n"
 		out += "\n".join(pool_decls)
-	if schema.has_string_pool:
-		out += "\nstring_pool_impl string_pool;\n"
+	if schema.has_string:
+		out += "\nchar_pool_impl char_pool;\n"
 	if pool_decls:
 		out += "\n"
 		out += gen_clear_pools(schema.pool_types)
-	if schema.has_string_pool:
-		out += "\nvoid clear_string_pool(void){\n"
-		out += "\tstring_pool.clear();\n"
+	if schema.has_string:
+		out += "\nvoid clear_strings(void){\n"
+		out += "\tchar_pool.clear();\n"
 		out += "}"
 
 	if schema.enums:

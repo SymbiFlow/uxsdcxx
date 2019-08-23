@@ -19,63 +19,69 @@ from xmlschema.validators import ( # type: ignore
     XMLSchema10,
 )
 
-from . import utils
+from . import utils, cpp_templates as tpl
 from .dfa import dfa_from_group, XsdDFA
 
 class UxsdType:
 	"""An XSD type which corresponds to a type in C++."""
-	cpp: str
 	name: str
 	def __init__(self):
 		raise TypeError("Use child types instead.")
+	@property
+	def cpp(self) -> str:
+		raise NotImplementedError("You should implement type.cpp.")
 
 class UxsdSourcable:
 	"""A type for which you can get the corresponding XSD source."""
 	xml_elem: ET.Element
+	def __init__(self):
+		raise TypeError("Use child types instead.")
 	@property
 	def source(self) -> str:
-		# Fix ET's indentation and remove the namespace attribute.
+		# Fixes ET's indentation and removes the namespace attribute.
 		out = ET.tostring(self.xml_elem).decode()
 		out = re.sub(r'xmlns:xs="(.*?)" ', r'', out)
 		return re.sub(r"  (.*)", r"\1", out)
-	def __init__(self):
-		raise TypeError("Use child types instead.")
 
 class UxsdSimple(UxsdType):
-	def __init__(self):
-		raise TypeError("Use child types instead.")
+	pass
 
 class UxsdUnion(UxsdSimple, UxsdSourcable):
 	member_types: List[UxsdSimple]
-	def __init__(self, name, cpp, member_types, xml_elem):
+	def __init__(self, name, member_types, xml_elem):
 		self.name = name
-		self.cpp = cpp
 		self.member_types = member_types
 		self.xml_elem = xml_elem
+	@property
+	def cpp(self) -> str:
+		return "union_%s" % self.name
 
 class UxsdEnum(UxsdSimple):
 	enumeration: List[str]
-	def __init__(self, name, cpp, enumeration):
+	def __init__(self, name, enumeration):
 		self.name = name
-		self.cpp = cpp
 		self.enumeration = enumeration
+	@property
+	def cpp(self) -> str:
+		return "enum_%s" % self.name
 
 class UxsdAtomic(UxsdSimple):
-	@property
-	def cpp_load_format(self) -> str:
-		return utils.atomic_builtin_load_formats[self.name]
 	def __init__(self):
 		raise TypeError("Use child types instead.")
+	@property
+	def cpp(self) -> str:
+		return tpl.atomic_builtins[self.name]
+	@property
+	def cpp_load_format(self) -> str:
+		return tpl.atomic_builtin_load_formats[self.name]
 
 class UxsdNumber(UxsdAtomic):
 	def __init__(self, name):
 		self.name = name
-		self.cpp = utils.atomic_builtins[name]
 
 class UxsdString(UxsdAtomic):
 	def __init__(self):
 		self.name = "string"
-		self.cpp = "const char *"
 
 class UxsdAttribute:
 	name: str
@@ -125,12 +131,14 @@ class UxsdComplex(UxsdType, UxsdSourcable):
 	"""An XSD complex type. It has attributes and content."""
 	attrs: List[UxsdAttribute]
 	content: Optional[UxsdContentType]
-	def __init__(self, name, cpp, attrs, content, xml_elem):
+	def __init__(self, name, attrs, content, xml_elem):
 		self.name = name
-		self.cpp = cpp
 		self.attrs = attrs
 		self.content = content
 		self.xml_elem = xml_elem
+	@property
+	def cpp(self) -> str:
+		return "t_%s" % self.name
 
 UxsdAny = Union[UxsdType, UxsdContentType, UxsdElement, UxsdAttribute]
 
@@ -207,9 +215,8 @@ class UxsdSchema:
 		assert len(t.validators) == 1, "I can only handle simple enumerations."
 		# Possibly member of an XsdList or XsdUnion if it doesn't have a name attribute.
 		name = t.name if t.name else t.parent.name
-		cpp_type = "enum_%s" % t.name
 		enumeration = t.validators[0].enumeration
-		out = UxsdEnum(name, cpp_type, enumeration)
+		out = UxsdEnum(name, enumeration)
 		self.enums.append(out)
 		return out
 
@@ -217,12 +224,11 @@ class UxsdSchema:
 	def visit_union(self, t: XsdUnion) -> UxsdUnion:
 		member_types = []
 		for m in t.member_types:
-			x = self.visit_simple_type(t)
+			x = self.visit_simple_type(m)
 			member_types.append(x)
 			self.simple_types_in_unions.append(x)
-		cpp_type = "union_%s" % t.name
 		xml_elem = t.schema_elem
-		out = UxsdUnion(t.name, cpp_type, member_types, xml_elem)
+		out = UxsdUnion(t.name, member_types, xml_elem)
 		self.unions.append(out)
 		return out
 
@@ -270,7 +276,6 @@ class UxsdSchema:
 			name = t.parent.name
 		else:
 			name = t.name
-		cpp_type = "t_%s" % name
 
 		# Remove possible duplicates.
 		# https://stackoverflow.com/a/39835527
@@ -292,7 +297,7 @@ class UxsdSchema:
 			content = UxsdLeaf(type)
 
 		xml_elem = t.schema_elem
-		out = UxsdComplex(name, cpp_type, attrs, content, xml_elem)
+		out = UxsdComplex(name, attrs, content, xml_elem)
 		if t.name is None:
 			self.anonymous_complex_types.append(out)
 		return out

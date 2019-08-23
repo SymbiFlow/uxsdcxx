@@ -5,7 +5,7 @@ import sys
 
 from typing import List, Tuple, Dict, Set, Union, Optional
 
-from . import templates, utils
+from . import cpp_templates, utils
 from .schema import *
 from .third_party import triehash
 
@@ -531,10 +531,10 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		"cmdline": cmdline,
 		"input_file": input_file,
 		"md5": utils.md5(input_file)}
-	out += templates.header_comment.substitute(x)
-	out += templates.includes
-	out += templates.collapsed_vec_defn
-	out += templates.char_pool_defn
+	out += cpp_templates.header_comment.substitute(x)
+	out += cpp_templates.includes
+	out += cpp_templates.collapsed_vec_defn
+	out += cpp_templates.char_pool_defn
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {"
 
@@ -589,7 +589,7 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 		"cmdline": cmdline,
 		"input_file": input_file,
 		"md5": utils.md5(input_file)}
-	out += templates.header_comment.substitute(x)
+	out += cpp_templates.header_comment.substitute(x)
 	out += "#include \"%s\"" % header_file_name
 	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {\n\n"
@@ -638,20 +638,20 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 	out += "\n".join(complex_type_lexers)
 
 	if schema.has_dfa:
-		out += templates.dfa_error_decl
+		out += cpp_templates.dfa_error_decl
 	if schema.has_all:
-		out += templates.all_error_decl
+		out += cpp_templates.all_error_decl
 	if schema.has_attr:
-		out += templates.attr_error_decl
+		out += cpp_templates.attr_error_decl
 	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
 	out += "\n".join(complex_type_loaders)
 	if schema.has_dfa:
-		out += templates.dfa_error_defn
+		out += cpp_templates.dfa_error_defn
 	if schema.has_all:
-		out += templates.all_error_defn
+		out += cpp_templates.all_error_defn
 	if schema.has_attr:
-		out += templates.attr_error_defn
+		out += cpp_templates.attr_error_defn
 	out += "\n} /* namespace uxsd */\n"
 	return out
 

@@ -27,4 +27,5 @@ atomic_builtins = {
 	"unsignedByte": "UInt8",
 	"positiveInteger": "UInt32",
 	"double": "Float64",
+	"IDREF": "Text",
 }

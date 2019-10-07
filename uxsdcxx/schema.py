@@ -209,16 +209,20 @@ class UxsdSchema:
 		xml_elem = t.schema_elem
 		return UxsdElement(name, many, optional, type, xml_elem)
 
-	# Only enumerations are supported as restrictions.
+	# Only enumerations are supported.
 	@lru_cache(maxsize=None)
-	def visit_restriction(self, t: XsdAtomicRestriction) -> UxsdEnum:
-		assert len(t.validators) == 1, "I can only handle simple enumerations."
-		# Possibly member of an XsdList or XsdUnion if it doesn't have a name attribute.
-		name = t.name if t.name else t.parent.name
-		enumeration = t.validators[0].enumeration
-		out = UxsdEnum(name, enumeration)
-		self.enums.append(out)
-		return out
+	def visit_restriction(self, t: XsdAtomicRestriction) -> Union[UxsdSimple, UxsdEnum]:
+		if len(t.validators) == 0:
+			return self.visit_simple_type(t.base_type)
+		elif len(t.validators) == 1:
+			# Possibly member of an XsdList or XsdUnion if it doesn't have a name attribute.
+			name = t.name if t.name else t.parent.name
+			enumeration = t.validators[0].enumeration
+			out = UxsdEnum(name, enumeration)
+			self.enums.append(out)
+			return out
+		else:
+			raise NotImplementedError("Only simple enumerations are supported.")
 
 	@lru_cache(maxsize=None)
 	def visit_union(self, t: XsdUnion) -> UxsdUnion:

@@ -1,10 +1,26 @@
 ## uxsdcxx
 
-This is a tool to generate PugiXML-based C++ reader, validator and writer from an XSD schema. It can generate code for a subset of XSD 1.0.
+uxsdcxx is a tool to generate PugiXML-based C++ reader, validator and writer from an XSD schema. It can generate code for a subset of XSD 1.0.
+
+It currently supports:
+
+- Simple types with following exceptions:
+	- `xs:list`s are just read into a string.
+	- Only enumerations are supported as `xs:restriction`s of simple types.
+- Complex types.
+- Model groups(all, sequence and choice)
+- Elements.
+- Attributes except `xs:anyAttribute`.
+	- Default values are supported.
+	- When writing, non-zero default values are always written out.
+
+It currently does not support:
+- Anything that PugiXML can't read:
+	- XML namespaces
 
 ### Getting started
 
-Install requirements, then run `./uxsdcxx.py foo.xsd`. Two files `foo_uxsdcxx.h` and `foo_uxsdcxx.cpp` will be created.
+`pip install uxsdcxx`. Use with `uxsdcxx.py foo.xsd`. Two files `foo_uxsdcxx.h` and `foo_uxsdcxx.cpp` will be created.
 
 ### API
 
@@ -47,6 +63,7 @@ uxsdcxx generates global pools to store multiply-occurring types.
 generates:
 ```c++
 extern std::vector<t_bar> bar_pool;
+[...]
 struct foo {
     collapsed_vec<t_bar, bar_pool> bars;
 };
@@ -54,7 +71,8 @@ struct foo {
 
 A `collapsed_vec` is a size and an offset pointing into a pool. It provides contiguous memory while being able to store an unbounded number of elements. The main limitation of a `collapsed_vec` is that it's insertable only when its end points to the end of the pool.
 
-Strings constitute a special case.
+Strings constitute a special case: a `char_pool` is generated for them to prevent many small allocations.
+
 ```xml
 <xs:complexType name="foo">
   <xs:sequence>
@@ -64,14 +82,13 @@ Strings constitute a special case.
 ```
 generates:
 ```c++
-extern string_pool_impl string_pool;
+extern char_pool_impl char_pool;
 struct foo {
     const char * bar;
 };
 ```
-The `string_pool` is mainly used by `root_element::load()` to store the string data.
 
-The pools are freed by using utility functions `uxsd::clear_pools()` and `uxsd::clear_string_pool()`. `clear_string_pool` is provided separately since one might wish to use the strings after the loaded structures are freed.
+The pools are freed by using utility functions `uxsd::clear_pools()` and `uxsd::clear_strings()`. `clear_strings` is provided separately since it can be useful to keep the strings around after freeing the generated structures.
 
 ##### 3. Data types
 
@@ -83,8 +100,8 @@ You can find the generated types for your schema in output header file `foo_uxsd
     - If an element can occur more than once, a `collapsed_vec<T, T_pool>` is generated.
     - If an element can occur zero times, another field `bool has_T` is generated to indicate whether the element is found.
 
-- `<xs:simpleType>` can take many forms:
-- `<xs:union>` corresponds to tagged union type, such as:
+- `<xs:simpleType>` can take many forms.
+- `<xs:union>` corresponds to a tagged union type, such as:
 ```c++
 struct union_foo {
     type_tag tag;

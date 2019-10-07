@@ -2,10 +2,10 @@
 
 import sys
 import os
-import xmlschema
+import xmlschema # type: ignore
 
 from random import getrandbits
-from typing import Any, Callable, List, Tuple, Dict, Set, Union, Optional
+from typing import Any, List, Tuple, Dict, Set, Union, Optional
 
 from uxsdcxx import capnp_templates as tpl
 from uxsdcxx import utils, __version__
@@ -27,6 +27,11 @@ from uxsdcxx.schema import (
 def gen_file_id() -> str:
 	"""Cap'n Proto IDs are 64 bits and the first bit is always 1."""
 	return "@%s;" % hex(getrandbits(64) | (1 << 63))
+
+def gen_namespace() -> str:
+	out = "using Cxx = import \"/capnp/c++.capnp\";\n"
+	out += "$Cxx.namespace(\"ucap\");"
+	return out
 
 def to_capnpcase(x: str) -> str:
 	x = utils.to_token(x) # normalize
@@ -110,6 +115,8 @@ def render_capnp_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
 	out += tpl.header_comment.substitute(x)
 	out += "\n\n"
 	out += gen_file_id()
+	out += "\n"
+	out += gen_namespace()
 	enums = [enum_to_capnp(e) for e in schema.enums]
 	if enums:
 		out += "\n\n"

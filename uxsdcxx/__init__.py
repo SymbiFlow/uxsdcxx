@@ -1,4 +1,4 @@
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 import os
 import sys
@@ -157,7 +157,7 @@ def tokens_from_complex_type(t: UxsdComplex) -> str:
 		enum_tokens = [utils.to_token(x.name) for x in t.attrs]
 		lookup_tokens = ["\"%s\"" % x.name for x in t.attrs]
 		out += "enum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "const char *atok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
+		out += "const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_complex_type(t: UxsdComplex) -> str:
@@ -165,7 +165,7 @@ def lexer_from_complex_type(t: UxsdComplex) -> str:
 	generated from an UxsdComplex.
 
 	It's in the form of (a|g)tok_foo lex_(attr|node)_foo(const char *in) and currently uses
-	a trie to parse the string. a or g indicates if the token is an attribute token or a group
+	a trie to lex the string. a or g indicates if the token is an attribute token or a group
 	(child element) token.
 	"""
 	out = ""
@@ -488,7 +488,7 @@ def _gen_write_complex(t: UxsdComplex, name: str, container: str) -> str:
 		out += "os << \"</%s>\";\n" % name
 	elif isinstance(t.content, UxsdLeaf):
 		out += "os << \">\";\n"
-		out += _gen_write_simple(t.content.type, name+".value")
+		out += _gen_write_simple(t.content.type, container+".value")
 		out += "os << \"</%s>\";\n" % name
 	else:
 		out += "os << \"/>\";\n"

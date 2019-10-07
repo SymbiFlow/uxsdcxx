@@ -20,6 +20,8 @@ atomic_builtins = {
 	"unsignedByte": "unsigned byte",
 	"positiveInteger": "unsigned int",
 	"double": "double",
+	"IDREF": "const char *",
+	"ID": "const char *",
 }
 
 atomic_builtin_load_formats = {
@@ -41,6 +43,8 @@ atomic_builtin_load_formats = {
 	"unsignedByte": "std::strtoul(%s, NULL, 10)",
 	"positiveInteger": "std::strtoul(%s, NULL, 10)",
 	"double": "std::strtod(%s, NULL)",
+	"IDREF": "char_pool.add(%s)",
+	"ID": "char_pool.add(%s)",
 }
 
 cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "atomic_commit", "atomic_noexcept",

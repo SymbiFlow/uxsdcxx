@@ -7,6 +7,7 @@ It currently supports:
 - Simple types with following exceptions:
 	- `xs:list`s are just read into a string.
 	- Only enumerations are supported as `xs:restriction`s of simple types.
+	- Restricted string types such as `IDREF`, `NCName` etc. aren't validated.
 - Complex types.
 - Model groups(all, sequence and choice)
 - Elements.

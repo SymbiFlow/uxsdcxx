@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+
+<!--
+
+file      : examples/cxx/parser/hello/hello.xml
+copyright : not copyrighted - public domain
+
+-->
+
+<hello>
+
+  <greeting>Hello</greeting>
+
+  <name>sun</name>
+  <name>moon</name>
+  <name>world</name>
+
+</hello>

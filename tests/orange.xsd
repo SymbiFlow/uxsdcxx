@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+
+<!--
+
+file      : examples/cxx/parser/performance/test.xsd
+copyright : not copyrighted - public domain
+
+-->
+
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:simpleType name="enum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="romance"/>
+      <xs:enumeration value="fiction"/>
+      <xs:enumeration value="horror"/>
+      <xs:enumeration value="history"/>
+      <xs:enumeration value="philosophy"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="record">
+    <xs:sequence>
+      <xs:element name="int" type="xs:unsignedInt"/>
+      <xs:element name="double" type="xs:double"/>
+      <xs:element name="name" type="xs:NCName"/>
+      <xs:element name="string" type="xs:string" minOccurs="0" maxOccurs="1"/>
+      <xs:choice>
+        <xs:element name="choice1" type="xs:string"/>
+        <xs:element name="choice2" type="xs:string"/>
+        <xs:element name="choice3" type="xs:string"/>
+        <xs:element name="choice4" type="xs:string"/>
+      </xs:choice>
+      <xs:element name="enum" type="enum"/>
+    </xs:sequence>
+    <xs:attribute name="apple" type="xs:boolean"/>
+    <xs:attribute name="orange" type="xs:unsignedLong" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="root">
+    <xs:sequence>
+      <xs:element name="record" type="record" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="root" type="root"/>
+
+</xs:schema>

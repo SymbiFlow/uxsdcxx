@@ -183,6 +183,7 @@ class UxsdSchema:
 		out: List[UxsdElement] = []
 		if t.occurs[1] is None or t.occurs[1] > 1: many = True
 		if t.occurs[0] is 0: optional = True
+		if not many and t.model == "choice": optional = True
 		for e in t._group:
 			if isinstance(e, XsdGroup):
 				out += self.visit_group(e, many, optional)

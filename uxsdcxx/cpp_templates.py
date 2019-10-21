@@ -22,6 +22,7 @@ atomic_builtins = {
 	"double": "double",
 	"IDREF": "const char *",
 	"ID": "const char *",
+	"NCName": "const char *",
 }
 
 atomic_builtin_load_formats = {
@@ -45,6 +46,7 @@ atomic_builtin_load_formats = {
 	"double": "std::strtod(%s, NULL)",
 	"IDREF": "char_pool.add(%s)",
 	"ID": "char_pool.add(%s)",
+	"NCName": "char_pool.add(%s)",
 }
 
 cpp_keywords = ["alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "atomic_commit", "atomic_noexcept",

@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+
+<!--
+
+file      : examples/cxx/parser/mixin/instance.xml
+copyright : not copyrighted - public domain
+
+-->
+
+<root>
+
+  <a>true</a>
+  <b>1</b>
+
+</root>

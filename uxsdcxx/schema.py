@@ -149,8 +149,9 @@ class UxsdSchema:
 	access to children and attributes, C++ type names of complex types etc.
 	This tree assumes it's immutable!
 	"""
-	# All user-defined complex types and root elements.
+	# All user-defined complex types, simple types and root elements.
 	complex_types: List[UxsdComplex] = []
+	simple_types: List[UxsdSimple] = []
 	root_elements: List[UxsdElement] = []
 
 	# Complex types found inside elements. They are not found in the global map,
@@ -245,21 +246,23 @@ class UxsdSchema:
 		if isinstance(t, XsdAtomicBuiltin):
 			if name == "string":
 				self.has_string = True
-				return UxsdString()
+				out: UxsdSimple = UxsdString()
 			else:
-				return UxsdNumber(name)
+				out = UxsdNumber(name)
 		elif isinstance(t, XsdList):
 			# Just read xs:lists into a string for now.
 			# That simplifies validation and keeps heap allocation to nodes only.
 			# VPR just reads list types into a string, too.
 			self.has_string = True
-			return UxsdString()
+			out = UxsdString()
 		elif isinstance(t, XsdAtomicRestriction):
-			return self.visit_restriction(t)
+			out = self.visit_restriction(t)
 		elif isinstance(t, XsdUnion):
-			return self.visit_union(t)
+			out = self.visit_union(t)
 		else:
 			raise NotImplementedError("Unknown XsdSimpleType %s." % t)
+		self.simple_types.append(out)
+		return out
 
 	@lru_cache(maxsize=None)
 	def visit_attribute(self, a: XsdAttribute) -> UxsdAttribute:
@@ -318,6 +321,7 @@ class UxsdSchema:
 		# Remove duplicates from schema-wide lists while preserving order.
 		self.enums = list(dict.fromkeys(self.enums))
 		self.unions = list(dict.fromkeys(self.unions))
+		self.simple_types = list(dict.fromkeys(self.simple_types))
 		self.simple_types_in_unions = list(dict.fromkeys(self.simple_types_in_unions))
 		self.pool_types = list(dict.fromkeys(self.pool_types))
 

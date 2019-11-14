@@ -31,28 +31,18 @@ def gen_namespace() -> str:
 	out += "$Cxx.namespace(\"ucap\");"
 	return out
 
-def to_capnpcase(x: str) -> str:
-	x = utils.to_token(x) # normalize
-	y = [w[0] + w[1:].lower() for w in x.split("_")]
-	return "".join(y)
-
-def to_camelcase(x: str) -> str:
-	x = to_capnpcase(x)
-	x = x[0].lower() + x[1:]
-	return x
-
 def to_type(t: UxsdType) -> str:
 	"""For determining type in fields only."""
 	if isinstance(t, UxsdAtomic):
 		return tpl.atomic_builtins[t.name]
 	else:
-		return to_capnpcase(t.name)
+		return utils.to_pascalcase(t.name)
 
 def complex_to_capnp(t: UxsdComplex) -> str:
 	fields = []
 	i = 0
 	for attr in t.attrs:
-		name = to_camelcase(attr.name)
+		name = utils.to_camelcase(attr.name)
 		type = to_type(attr.type)
 		if attr.default_value is not None:
 			field = "\t%s @%d :%s = %s;" % (name, i,  type, attr.default_value)
@@ -62,7 +52,7 @@ def complex_to_capnp(t: UxsdComplex) -> str:
 		i += 1
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
 		for el in t.content.children:
-			name = to_camelcase(el.name)
+			name = utils.to_camelcase(el.name)
 			type = to_type(el.type)
 			if el.many:
 				field = "\t%s @%d :List(%s);" % (utils.pluralize(name), i, type)
@@ -82,7 +72,7 @@ def complex_to_capnp(t: UxsdComplex) -> str:
 def enum_to_capnp(t: UxsdEnum) -> str:
 	fields = []
 	for i, e in enumerate(t.enumeration): # hehe
-		fields.append("\t%s @%d;" % (to_camelcase(e), i))
+		fields.append("\t%s @%d;" % (utils.to_camelcase(e), i))
 	out = ""
 	out += "enum %s {\n" % to_type(t)
 	out += "\n".join(fields)
@@ -93,7 +83,7 @@ def union_to_capnp(t: UxsdUnion) -> str:
 	"""Declare global unnamed union inside struct."""
 	fields = []
 	for i, m in enumerate(t.member_types):
-		name = to_camelcase(m.name)
+		name = utils.to_camelcase(m.name)
 		field = "\t\t%s @%d :%s;" % (name, i, to_type(m))
 		fields.append(field)
 	out = ""

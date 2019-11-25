@@ -1,6 +1,7 @@
 from typing import List, Tuple, Dict, Set, Union, Optional
 
 from . import cpp_templates, utils
+from .utils import checked
 from .version import __version__
 from .third_party import triehash
 from .schema import (
@@ -19,99 +20,55 @@ from .schema import (
 	UxsdAttribute,
 )
 
-def typedefn_from_union(t: UxsdUnion) -> str:
-	"""Generate a C++ definition of a type-tagged union.
-
-	Example:
-	/**
-	 * Generated from:
-	 * <xs:union... />
-	*/
-	struct union_foo {
-		type_tag tag;
-		union {
-			double as_double;
-			int as_int;
-		}
-	}
-	type_tag is a special enum which is generated from the sum of the
-	simple types seen so far in unions.
-	"""
-	out = ""
-	out += "/** Generated from:\n"
-	out += utils.to_comment_body(t.source)
-	out += "\n*/\n"
-	out += "struct %s {\n" % t.cpp
-	out += "\ttype_tag tag;\n"
-	out += "\tunion {\n"
-	for e in t.member_types:
-		field_name = utils.to_union_field_name(e.cpp)
-		out += "\t\t%s %s;\n" % (e.cpp, field_name)
-	out += "\t};\n"
-	out += "};\n"
-	return out
-
-def typedefn_from_complex_type(t: UxsdComplex) -> str:
-	"""Generate a C++ struct definition corresponding to a UxsdComplex.
-
-	Example:
-	/**
-	 * Generated from:
-	 * <xs:complexType... />
-	*/
-	struct t_foo {
-		int bar;
-		bool has_my_baz;
-		t_baz my_baz;
-		collapsed_vec<t_quux, quux_pool> my_quuxes;
-	}
-	"""
+def _gen_virtual_fns(t: UxsdComplex) -> str:
+	"""Generate virtual functions to interface with an element with a complex type."""
 	fields = []
+	def _add_field(ret: str, verb: str, what: str, args: str):
+		fields.append("virtual inline %s %s_%s_%s(%s) = 0;" % (ret, verb, t.name, what, args))
+	def _add_set(e: Union[UxsdElement, UxsdAttribute]):
+		_add_field("void", "set", e.name, "%s %s, void * data" % (e.type.cpp, checked(e.name)))
+	def _add_init(e: UxsdElement):
+		_add_field("void *", "init", e.name, "void * data")
+	def _add_add_simple(e: UxsdElement):
+		_add_field("void", "add", e.name, "%s %s, void * data" % (e.type.cpp, checked(e.name)))
+	def _add_add_complex(f: UxsdElement):
+		_add_field("void *", "add", e.name, "void * data")
+	def _add_add(e: UxsdElement):
+		if isinstance(e.type, UxsdSimple): _add_add_simple(e)
+		elif isinstance(e.type, UxsdComplex): _add_add_complex(e)
+		else: raise TypeError(e)
+
 	for attr in t.attrs:
-		fields.append("%s %s;" % (attr.type.cpp, utils.checked(attr.name)))
+		_add_set(attr)
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		for el in t.content.children:
-			if el.many:
-				fields.append("collapsed_vec<%s, %s_pool> %s;" % (el.type.cpp, el.type.name, utils.pluralize(el.name)))
-			elif el.optional:
-				fields.append("bool has_%s;" % el.name)
-				fields.append("%s %s;" % (el.type.cpp, utils.checked(el.name)))
+		for e in t.content.children:
+			if e.many:
+				_add_add(e)
+			elif isinstance(e.type, UxsdComplex):
+				_add_init(e)
+			elif isinstance(e.type, UxsdSimple):
+				_add_set(e)
 			else:
-				fields.append("%s %s;" % (el.type.cpp, utils.checked(el.name)))
+				raise TypeError(e)
 	elif isinstance(t.content, UxsdLeaf):
-		fields.append("%s value;" % t.content.type.cpp)
+		_add_field("void", "set", "value", "%s value, void * data" % t.content.type.cpp)
 
 	out = ""
-	out += "/** Generated from:\n"
+	out += "/** Generated for complex type \"%s\":\n" % t.name
 	out += utils.to_comment_body(t.source)
 	out += "\n*/\n"
-	out += "struct %s {\n" % t.cpp
-	out += utils.indent("\n".join(fields))
-	out += "\n};"
+	out += "\n".join(fields)
 	return out
 
-def typedefn_from_root_element(el: UxsdElement) -> str:
-	"""Generate a C++ class declaration of a root element,
-	which inherits its content type and adds load and write functions.
-	"""
+def gen_base_class(schema: UxsdSchema) -> str:
+	"""Generate a C++ base class of a root element."""
 	out = ""
-	out += "/** Generated from:\n"
-	out += utils.to_comment_body(el.source)
-	out += "\n*/\n"
-	out += "class %s : public %s {\n" % (el.name, el.type.cpp)
+	root = schema.root_element
+	out += "class %sBase {\n" % utils.to_pascalcase(root.name)
 	out += "public:\n"
-	out += "\tpugi::xml_parse_result load(std::istream &is);\n"
-	out += "\tvoid write(std::ostream &os);\n"
+	virtual_fns = [_gen_virtual_fns(x) for x in schema.complex_types]
+	out += utils.indent("\n\n".join(virtual_fns))
 	out += "};\n"
-	return out
-
-#
-
-def gen_clear_pools(ts: List[UxsdType]) -> str:
-	out = "void clear_pools(void){\n"
-	for t in ts:
-		out += "\t%s_pool.clear();\n" % t.name
-	out += "}"
 	return out
 
 #
@@ -162,12 +119,12 @@ def tokens_from_complex_type(t: UxsdComplex) -> str:
 		enum_tokens = [utils.to_token(e.name) for e in t.content.children]
 		lookup_tokens = ["\"%s\"" % e.name for e in t.content.children]
 		out += "enum class gtok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
+		out += "static const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
 	if t.attrs:
 		enum_tokens = [utils.to_token(x.name) for x in t.attrs]
 		lookup_tokens = ["\"%s\"" % x.name for x in t.attrs]
 		out += "enum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
+		out += "static const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_complex_type(t: UxsdComplex) -> str:
@@ -206,7 +163,7 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	out = ""
 	out += "static const int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
 	out += "static const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
-	out += "int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
+	out += "static int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
 	for i in range(0, max(dfa.states)+1):
 		state = dfa.transitions[i]
 		row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
@@ -221,28 +178,26 @@ def _gen_load_simple(t: UxsdSimple, input: str) -> str:
 	if isinstance(t, UxsdString):
 		return input
 	elif isinstance(t, UxsdEnum):
-		return "lex_%s(%s)" % (t.name, input)
+		return "lex_%s(%s, true)" % (t.cpp, input)
 	else:
-		return "load_%s(%s)" % (t.name, input)
+		return "load_%s(%s)" % (utils.to_snakecase(t.cpp), input)
 
 def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdComplex)
 	out = ""
 	if t.many:
-		out += "out.add_%s();\n" % _gen_stub_suffix(t, parent)
-		out += "load_%s(node, out);\n" % t.type.name
+		out += "load_%s(node, out.add_%s(data));\n" % (t.type.name, _gen_stub_suffix(t, parent))
 	else:
-		out += "out.init_%s();\n" % _gen_stub_suffix(t, parent)
-		out += "load_%s(node, out);\n" % t.type.name
+		out += "load_%s(node, out.init_%s(data));\n" % (t.type.name, _gen_stub_suffix(t, parent))
 	return out
 
 def _gen_load_element_simple(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdSimple)
 	out = ""
 	if t.many:
-		out += "out.add_%s(%s);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
+		out += "out.add_%s(%s, data);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
 	else:
-		out += "out.set_%s(%s);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
+		out += "out.set_%s(%s, data);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
 	return out
 
 def _gen_load_element(t: UxsdElement, parent: str) -> str:
@@ -252,7 +207,7 @@ def _gen_load_element(t: UxsdElement, parent: str) -> str:
 		return _gen_load_element_simple(t, parent)
 
 def _gen_load_attr(t: UxsdAttribute, parent: str) -> str:
-	return "out.set_%s(%s);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "attr.value()"))
+	return "out.set_%s(%s, data);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "attr.value()"))
 
 def _gen_load_dfa(t: UxsdComplex) -> str:
 	"""Partial function to generate the child element validation&loading portion
@@ -361,15 +316,16 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T>\n"
-	out += "void load_%s(const pugi::xml_node &root, T &out){\n" % t.name
+	out += "void load_%s(const pugi::xml_node &root, T &out, void *data){\n" % t.name
 	if isinstance(t.content, UxsdDfa):
 		out = _gen_dfa_table(t) + out
 		out += utils.indent(_gen_load_dfa(t))
 	elif isinstance(t.content, UxsdAll):
 		out += utils.indent(_gen_load_all(t))
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tout.set_%s_value(%s);\n" % (t.name, _gen_load_simple(t.content.type, "node.child_value()"))
-	else:
+		out += "\tout.set_%s_value(%s);\n" % (t.name, _gen_load_simple(t.content.type, "root.child_value()"))
+
+	if not isinstance(t.content, (UxsdDfa, UxsdAll)):
 		out += "\tif(root.first_child().type() == pugi::node_element)\n"
 		out += "\t\tthrow std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
 
@@ -393,7 +349,7 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 	which can load an XSD simple type from str and return it.
 	"""
 	out = ""
-	out += "inline %s load_%s(const char *in){\n" % (t.cpp, t.name)
+	out += "inline %s load_%s(const char *in){\n" % (t.cpp, utils.to_snakecase(t.cpp))
 	out += "\t%s out;\n" % t.cpp
 	if isinstance(t, UxsdAtomic):
 		out += "\tout = %s;\n" % (t.cpp_load_format % "in")
@@ -409,18 +365,20 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 
 #
 
-def load_fn_from_element(el: UxsdElement) -> str:
+def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
-	out += "pugi::xml_parse_result %s::load(std::istream &is){\n" % (utils.to_pascalcase(el.name) + "Base")
+	out += "template <class T>\n"
+	out += "pugi::xml_parse_result load_%s_xml(T &out, std::istream &is){\n" % e.name
+	out += "static_assert(std::is_base_of<%sBase, T>::value);\n" % utils.to_pascalcase(e.name)
 	out += "\tpugi::xml_document doc;\n"
 	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
 	out += "\tif(!result) return result;\n"
 	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
 
-	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % el.name
+	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % e.name
 	out += "\t\t\t/* If errno is set up to this point, it messes with strtol errno checking. */\n"
 	out += "\t\t\terrno = 0;\n"
-	out += "\t\t\tload_%s(node, *this);\n" % el.type.name
+	out += "\t\t\tload_%s(node, out, NULL);\n" % e.type.name
 
 	out += "\t\t}\n"
 	out += "\t\telse throw std::runtime_error(\"Invalid root-level element \" + std::string(node.name()));\n"
@@ -481,11 +439,11 @@ def _gen_write_complex(t: UxsdComplex, name: str, container: str) -> str:
 		out += "os << \">\";\n"
 		for e in t.content.children:
 			if e.many:
-				out += "for(auto &%s: %s.%s){\n" % (utils.checked(e.name), container, utils.pluralize(e.name))
-				out += utils.indent(_gen_write_element(e, utils.checked(e.name)))
+				out += "for(auto &%s: %s.%s){\n" % (checked(e.name), container, utils.pluralize(e.name))
+				out += utils.indent(_gen_write_element(e, checked(e.name)))
 				out += "}\n"
 			else:
-				new_container = "%s.%s" % (container, utils.checked(e.name))
+				new_container = "%s.%s" % (container, checked(e.name))
 				if e.optional:
 					out += "if(%s.has_%s){\n" % (container, e.name)
 					out += utils.indent(_gen_write_element(e, new_container))
@@ -522,10 +480,11 @@ def _gen_write_element(el: UxsdElement, container: str) -> str:
 		raise TypeError("Unknown type %s." % el.type)
 	return out
 
-def write_fn_from_element(t: UxsdElement) -> str:
+def write_fn_from_element(e: UxsdElement) -> str:
 	out = ""
-	out += "void %s::write(std::ostream &os){\n" % utils.checked(t.name)
-	out += utils.indent(_gen_write_element(t, "(*this)"))
+	out += "void write_%s_xml(std::ostream &os){\n"
+	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value);\n" % utils.to_pascalcase(e.name)
+	out += utils.indent(_gen_write_element(e, "(*this)"))
 	out += "}\n"
 	return out
 
@@ -540,88 +499,29 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		"md5": utils.md5(input_file)}
 	out += cpp_templates.header_comment.substitute(x)
 	out += cpp_templates.includes
-	out += cpp_templates.collapsed_vec_defn
-	out += cpp_templates.char_pool_defn
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {"
-
-	out += "\n\n/* Forward decl of generated data types. Needed for the pools.\n"
-	out += " * The types are sorted according to tree height, so that the \"root type\"\n"
-	out += " * appears last and we don't get any \"incomplete type\" errors. */\n"
-	struct_decls = ["struct %s;" % t.cpp for t in schema.unions] + ["struct %s;" % t.cpp for t in schema.complex_types]
-	out += "\n".join(struct_decls)
-
-	out += "\n\n/* Global shared pools for storing multiply-occurring elements. */\n"
-	extern_pool_decls = []
-	for t in schema.pool_types:
-		extern_pool_decls.append("extern std::vector <%s> %s_pool;" % (t.cpp, t.name))
-	out += "\n".join(extern_pool_decls)
-	out += "\n"
-	if schema.has_string:
-		out += "\nextern char_pool_impl char_pool;\n"
-	out += "\n/* Helper function for freeing the pools. */\n"
-	out += "void clear_pools(void);"
-	if schema.has_string:
-		out += "\n/* One may want to use the allocated strings after loading, so this\n"
-		out += " * function is provided separately. */\n"
-		out += "void clear_strings(void);"
 
 	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
 	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
 	out += "\n".join(enum_tokens)
 
-	type_tag_tokens = [utils.to_token(x.cpp) for x in schema.simple_types_in_unions]
-	if type_tag_tokens:
-		out += "\n\n/* Type tag enum for tagged unions. */\n"
-		out += "enum class type_tag {%s};\n" % ", ".join(type_tag_tokens)
-
-	union_defns = [typedefn_from_union(t) for t in schema.unions]
-	if union_defns:
-		out += "\n\n/* Structs generated from  XSD unions. */\n"
-		out += "\n\n".join(union_defns)
-
-	struct_defns = [typedefn_from_complex_type(t) for t in schema.complex_types]
-	out += "\n\n/* Structs generated from complex types. */\n\n"
-	out += "\n\n".join(struct_defns)
-	root_element_decls = [typedefn_from_root_element(el) for el in schema.root_elements]
-	out += "\n\n/* Classes generated from root elements. */\n"
-	out += "\n\n".join(root_element_decls)
-	out += "\n} /* namespace uxsd */\n"
-	return out
-
-def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_file_name: str) -> str:
-	"""Render a C++ implementation file to a string."""
-	out = ""
-	x = {"version": __version__,
-		"cmdline": cmdline,
-		"input_file": input_file,
-		"md5": utils.md5(input_file)}
-	out += cpp_templates.header_comment.substitute(x)
-	out += "#include \"%s\"" % header_file_name
-	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {\n\n"
-	out += triehash.gen_prelude()
+	out += "\n\n/* Base class for the schema. */\n"
+	out += gen_base_class(schema)
 
 	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []
 	for t in schema.complex_types:
-		load_fn_decls.append("void load_%s(const pugi::xml_node &root, %s *out);" % (t.name, t.cpp))
+		load_fn_decls.append("template <class T>")
+		load_fn_decls.append("void load_%s(const pugi::xml_node &root, T &out, void *data);" % (t.name))
 	out += "\n".join(load_fn_decls)
 
-	if schema.enums:
-		enum_lookups = [lookup_from_enum(t) for t in schema.enums]
-		enum_lexers = [lexer_from_enum(t) for t in schema.enums]
-		out += "\n\n/* Lookup tables for enums. */\n"
-		out += "\n".join(enum_lookups)
-		out += "\n\n/* Lexers(string->token functions) for enums. */\n"
-		out += "\n".join(enum_lexers)
+	out += "\n\n/* Load function for the root element. */\n"
+	out += load_fn_from_element(schema.root_element)
+#	out += "\n\n/* Write function for the root element. */\n"
+#	out += write_fn_from_element(schema.root_element)
 
-	root_load_defns = [load_fn_from_element(el) for el in schema.root_elements]
-	out += "\n\n/* Load functions for the root elements. */\n"
-	out += "\n".join(root_load_defns)
-	root_write_defns = [write_fn_from_element(el) for el in schema.root_elements]
-	out += "\n\n/* Write functions for the root elements. */\n"
-	out += "\n".join(root_write_defns)
+	out += triehash.gen_prelude()
 
 	complex_type_tokens = [tokens_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Tokens for attribute and node names. */\n"
@@ -637,17 +537,42 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 	if schema.has_attr:
 		out += cpp_templates.attr_error_decl
 
+	if schema.enums:
+		enum_lookups = [lookup_from_enum(t) for t in schema.enums]
+		enum_lexers = [lexer_from_enum(t) for t in schema.enums]
+		out += "\n\n/* Lookup tables for enums. */\n"
+		out += "\n".join(enum_lookups)
+		out += "\n\n/* Lexers(string->token functions) for enums. */\n"
+		out += "\n".join(enum_lexers)
+
 	# No need to generate a loader for const char * or enums.
 	simple_type_loaders = [load_fn_from_simple_type(t) for t in schema.simple_types if not isinstance(t, (UxsdString, UxsdEnum))]
 	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
 	out += "\n".join(simple_type_loaders)
 	out += "\n".join(complex_type_loaders)
+
 	if schema.has_dfa:
 		out += cpp_templates.dfa_error_defn
 	if schema.has_all:
 		out += cpp_templates.all_error_defn
 	if schema.has_attr:
 		out += cpp_templates.attr_error_defn
+
+	out += "\n\n} /* namespace uxsd */\n"
+	return out
+
+def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_file_name: str) -> str:
+	"""Render a C++ implementation file to a string."""
+	out = ""
+	x = {"version": __version__,
+		"cmdline": cmdline,
+		"input_file": input_file,
+		"md5": utils.md5(input_file)}
+	out += cpp_templates.header_comment.substitute(x)
+	out += "#include \"%s\"" % header_file_name
+	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
+	out += "namespace uxsd {\n\n"
+
 	out += "\n} /* namespace uxsd */\n"
 	return out

@@ -46,7 +46,7 @@ def _gen_required_attribute_arg_list(attrs: List[UxsdAttribute], out:bool=False)
 	return ', '.join(args)
 
 
-def _gen_virtual_fns(t: UxsdComplex, complex_type_map : Dict[str, UxsdComplex]) -> str:
+def _gen_virtual_fns(t: UxsdComplex) -> str:
 	"""Generate virtual functions to interface with an element with a complex type."""
 	fields = []
 	def _add_field(ret: str, verb: str, what: str, args: str):
@@ -54,12 +54,12 @@ def _gen_virtual_fns(t: UxsdComplex, complex_type_map : Dict[str, UxsdComplex]) 
 	def _add_set(e: Union[UxsdElement, UxsdAttribute]):
 		_add_field("void", "set", e.name, _gen_attribute_arg(e) + ", void * data")
 	def _add_init(e: UxsdElement):
-		_add_field("void *", "init", e.name, _gen_required_attribute_arg_list(complex_type_map[e.type.name].attrs))
+		_add_field("void *", "init", e.name, _gen_required_attribute_arg_list(e.type.attrs))
 		_add_field("void", "finish", e.name, "void * data")
 	def _add_add_simple(e: UxsdElement):
 		_add_field("void", "add", e.name, "%s %s, void * data" % (e.type.cpp, checked(e.name)))
 	def _add_add_complex(f: UxsdElement):
-		_add_field("void *", "add", e.name, _gen_required_attribute_arg_list(complex_type_map[e.type.name].attrs))
+		_add_field("void *", "add", e.name, _gen_required_attribute_arg_list(e.type.attrs))
 		_add_field("void", "finish", e.name, "void * data")
 	def _add_add(e: UxsdElement):
 		if isinstance(e.type, UxsdSimple): _add_add_simple(e)
@@ -99,12 +99,7 @@ def gen_base_class(schema: UxsdSchema) -> str:
 	out += "public:\n"
 	out += "\tvirtual ~%sBase() {}\n" % class_name
 
-	complex_types = {}
-	for x in schema.complex_types:
-		assert x.name not in complex_types
-		complex_types[x.name] = x
-
-	virtual_fns = [_gen_virtual_fns(x, complex_types) for x in schema.complex_types]
+	virtual_fns = [_gen_virtual_fns(x) for x in schema.complex_types]
 	out += utils.indent("\n\n".join(virtual_fns))
 	out += "\n};\n"
 	return out
@@ -220,14 +215,14 @@ def _gen_load_simple(t: UxsdSimple, input: str) -> str:
 	else:
 		return "load_%s(%s)" % (utils.to_snakecase(t.cpp), input)
 
-def _gen_load_element_complex(t: UxsdElement, parent: str, complex_type_map : Dict[str, UxsdComplex]) -> str:
+def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdComplex)
 	out = "{\n"
 
 	args = ["data"]
 	load_args = []
 	
-	for attr in complex_type_map[t.type.name].attrs:
+	for attr in t.type.attrs:
 		if not pass_at_init(attr):
 			continue
 
@@ -256,9 +251,9 @@ def _gen_load_element_simple(t: UxsdElement, parent: str) -> str:
 		out += "out.set_%s(%s, data);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
 	return out
 
-def _gen_load_element(t: UxsdElement, parent: str, complex_type_map : Dict[str, UxsdComplex]) -> str:
+def _gen_load_element(t: UxsdElement, parent: str) -> str:
 	if isinstance(t.type, UxsdComplex):
-		return _gen_load_element_complex(t, parent, complex_type_map)
+		return _gen_load_element_complex(t, parent)
 	else:
 		return _gen_load_element_simple(t, parent)
 
@@ -268,7 +263,7 @@ def _gen_load_attr(t: UxsdAttribute, parent: str) -> str:
 	else:
 		return "/* Attribute %s is already set */\n" % t.name
 
-def _gen_load_dfa(t: UxsdComplex, complex_type_map : Dict[str, UxsdComplex]) -> str:
+def _gen_load_dfa(t: UxsdComplex) -> str:
 	"""Partial function to generate the child element validation&loading portion
 	of a C++ function load_foo, if the model group is an xs:sequence or xs:choice.
 
@@ -295,7 +290,7 @@ def _gen_load_dfa(t: UxsdComplex, complex_type_map : Dict[str, UxsdComplex]) -> 
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
 		out += "\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
-		out += utils.indent(_gen_load_element(el, t.name, complex_type_map), 2)
+		out += utils.indent(_gen_load_element(el, t.name), 2)
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
@@ -307,7 +302,7 @@ def _gen_load_dfa(t: UxsdComplex, complex_type_map : Dict[str, UxsdComplex]) -> 
 
 	return out
 
-def _gen_load_all(t: UxsdComplex, complex_type_map: Dict[str, UxsdComplex]) -> str:
+def _gen_load_all(t: UxsdComplex) -> str:
 	"""Partial function to generate the child element validation&loading portion
 	of a C++ function load_foo, if the model group is an xs:all.
 
@@ -330,7 +325,7 @@ def _gen_load_all(t: UxsdComplex, complex_type_map: Dict[str, UxsdComplex]) -> s
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
 		out += "\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
-		out += utils.indent(_gen_load_element(el, t.name, complex_type_map), 2)
+		out += utils.indent(_gen_load_element(el, t.name), 2)
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
@@ -417,7 +412,7 @@ def load_required_attrs_fn_from_complex_type(t: UxsdComplex) -> str:
 	out += "}\n"
 	return out
 
-def load_fn_from_complex_type(t: UxsdComplex, complex_type_map: Dict[str, UxsdComplex]) -> str:
+def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""Generate a full C++ function load_foo(&root, &out)
 	which can load an XSD complex type from DOM &root into C++ object out.
 	"""
@@ -435,9 +430,9 @@ def load_fn_from_complex_type(t: UxsdComplex, complex_type_map: Dict[str, UxsdCo
 
 	if isinstance(t.content, UxsdDfa):
 		out = _gen_dfa_table(t) + out
-		out += utils.indent(_gen_load_dfa(t, complex_type_map))
+		out += utils.indent(_gen_load_dfa(t))
 	elif isinstance(t.content, UxsdAll):
-		out += utils.indent(_gen_load_all(t, complex_type_map))
+		out += utils.indent(_gen_load_all(t))
 	elif isinstance(t.content, UxsdLeaf):
 		out += "\tout.set_%s_value(%s, data);\n" % (t.name, _gen_load_simple(t.content.type, "root.child_value()"))
 
@@ -657,15 +652,10 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		out += "\n\n/* Lexers(string->token functions) for enums. */\n"
 		out += "\n".join(enum_lexers)
 
-	complex_types = {}
-	for x in schema.complex_types:
-		assert x.name not in complex_types
-		complex_types[x.name] = x
-
 	# No need to generate a loader for const char * or enums.
 	simple_type_loaders = [load_fn_from_simple_type(t) for t in schema.simple_types if not isinstance(t, (UxsdString, UxsdEnum))]
 	complex_type_attr_loaders = [load_required_attrs_fn_from_complex_type(t) for t in schema.complex_types if sum(pass_at_init(attr) for attr in t.attrs) > 0]
-	complex_type_loaders = [load_fn_from_complex_type(t, complex_types) for t in schema.complex_types]
+	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
 	out += "\n".join(simple_type_loaders)
 	out += "\n".join(complex_type_attr_loaders)

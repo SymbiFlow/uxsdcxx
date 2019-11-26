@@ -1,10 +1,9 @@
 import re
 
-from typing import Any, Callable, List, Tuple, Dict, Set, Union, Optional
+from typing import List, Union, Optional
 from functools import lru_cache
 from xml.etree import ElementTree as ET # type: ignore
 
-import xmlschema # type: ignore
 from xmlschema.validators import ( # type: ignore
     XsdAttribute,
     XsdAtomicBuiltin,
@@ -14,12 +13,11 @@ from xmlschema.validators import ( # type: ignore
     XsdGroup,
     XsdSimpleType,
     XsdList,
-    XsdType,
     XsdUnion,
     XMLSchema10,
 )
 
-from . import utils, cpp_templates as tpl
+from . import cpp_templates as tpl
 from .dfa import dfa_from_group, XsdDFA
 
 class UxsdType:
@@ -174,7 +172,7 @@ class UxsdSchema:
 	def visit_group(self, t: XsdGroup, many=False, optional=False) -> List[UxsdElement]:
 		out: List[UxsdElement] = []
 		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] is 0: optional = True
+		if t.occurs[0] == 0: optional = True
 		if not many and t.model == "choice": optional = True
 		for e in t._group:
 			if isinstance(e, XsdGroup):
@@ -188,7 +186,7 @@ class UxsdSchema:
 	@lru_cache(maxsize=None)
 	def visit_element(self, t: XsdElement, many=False, optional=False) -> UxsdElement:
 		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] is 0: optional = True
+		if t.occurs[0] == 0: optional = True
 
 		type: UxsdType
 		if isinstance(t.type, XsdComplexType):

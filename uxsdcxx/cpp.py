@@ -94,8 +94,10 @@ def gen_base_class(schema: UxsdSchema) -> str:
 	"""Generate a C++ base class of a root element."""
 	out = ""
 	root = schema.root_element
-	out += "class %sBase {\n" % utils.to_pascalcase(root.name)
+	class_name = utils.to_pascalcase(root.name)
+	out += "class %sBase {\n" % class_name
 	out += "public:\n"
+	out += "\tvirtual ~%sBase() {}\n" % class_name
 
 	complex_types = {}
 	for x in schema.complex_types:
@@ -237,9 +239,11 @@ def _gen_load_element_complex(t: UxsdElement, parent: str, complex_type_map : Di
 	if len(load_args) > 0:
 		out += "\tload_%s_required_attributes(node, %s);\n" % (t.type.name, ', '.join(load_args))
 	if t.many:
-		out += "\tload_%s(node, out.add_%s(%s));\n" % (t.type.name, _gen_stub_suffix(t, parent), ', '.join(args))
+		out += "\tvoid *child_data = out.add_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
 	else:
-		out += "\tload_%s(node, out.init_%s(%s));\n" % (t.type.name, _gen_stub_suffix(t, parent), ', '.join(args))
+		out += "\tvoid *child_data = out.init_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
+	out += "\tload_%s(node, out, child_data);\n" % t.type.name
+	out += "\tout.finish_%s(child_data);\n" % _gen_stub_suffix(t, parent)
 	out += "}\n"
 	return out
 
@@ -435,14 +439,11 @@ def load_fn_from_complex_type(t: UxsdComplex, complex_type_map: Dict[str, UxsdCo
 	elif isinstance(t.content, UxsdAll):
 		out += utils.indent(_gen_load_all(t, complex_type_map))
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tout.set_%s_value(%s);\n" % (t.name, _gen_load_simple(t.content.type, "root.child_value()"))
+		out += "\tout.set_%s_value(%s, data);\n" % (t.name, _gen_load_simple(t.content.type, "root.child_value()"))
 
 	if not isinstance(t.content, (UxsdDfa, UxsdAll)):
 		out += "\tif(root.first_child().type() == pugi::node_element)\n"
 		out += "\t\tthrow std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
-
-	out += "\n"
-	out += "\tout.finish_%s(data);\n" % t.name
 	out += "\n"
 
 	out += "}\n"
@@ -478,7 +479,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T>\n"
 	out += "pugi::xml_parse_result load_%s_xml(T &out, std::istream &is){\n" % e.name
-	out += "static_assert(std::is_base_of<%sBase, T>::value);\n" % utils.to_pascalcase(e.name)
+	out += "static_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from RrGraphBase\");\n" % utils.to_pascalcase(e.name)
 	out += "\tpugi::xml_document doc;\n"
 	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
 	out += "\tif(!result) return result;\n"

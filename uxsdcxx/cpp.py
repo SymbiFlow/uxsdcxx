@@ -61,6 +61,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 	def _add_add_simple(e: UxsdElement):
 		_add_field("void", "add", e.name, "%s %s, void * data" % (e.type.cpp, checked(e.name)))
 	def _add_add_complex(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		_add_field("void *", "add", e.name, _gen_required_attribute_arg_list(e.type.attrs))
 		_add_field("void", "finish", e.name, "void * data")
 	def _add_add(e: UxsdElement):

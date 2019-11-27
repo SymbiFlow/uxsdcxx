@@ -231,20 +231,19 @@ class UxsdSchema:
 
 	@lru_cache(maxsize=None)
 	def visit_simple_type(self, t: XsdSimpleType) -> UxsdSimple:
+		out: UxsdSimple
 		# Remove w3.org namespace from built-in type names.
 		if "w3.org" in t.name:
 			name = t.name.split("}")[1]
 		if isinstance(t, XsdAtomicBuiltin):
-			if name == "string":
-				self.has_string = True
-				out: UxsdSimple = UxsdString()
+			if name in ["string", "IDREF", "ID", "NCName"]:
+				out = UxsdString()
 			else:
 				out = UxsdNumber(name)
 		elif isinstance(t, XsdList):
 			# Just read xs:lists into a string for now.
 			# That simplifies validation and keeps heap allocation to nodes only.
 			# VPR just reads list types into a string, too.
-			self.has_string = True
 			out = UxsdString()
 		elif isinstance(t, XsdAtomicRestriction):
 			out = self.visit_restriction(t)
@@ -297,14 +296,10 @@ class UxsdSchema:
 
 		xml_elem = t.schema_elem
 		out = UxsdComplex(name, attrs, content, xml_elem)
-		if t.name is None:
-			self.anonymous_complex_types.append(out)
+		self.complex_types.append(out)
 		return out
 
 	def __init__(self, parent: XMLSchema10) -> None:
-		for k, v in parent.types.items():
-			if "w3.org" not in k and isinstance(v, XsdComplexType):
-				self.complex_types.append(self.visit_complex_type(v))
 		if not len(parent.elements) == 1:
 			raise NotImplementedError("Only one root element is supported.")
 		self.root_element = self.visit_element(*parent.elements.values())
@@ -333,7 +328,6 @@ class UxsdSchema:
 			else:
 				return 1
 
-		self.complex_types += self.anonymous_complex_types
 		self.complex_types.sort(key=_key_type)
 		self.elements.sort(key=lambda x: _key_type(x.type))
 

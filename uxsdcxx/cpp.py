@@ -1,4 +1,4 @@
-from typing import Union, Dict, List
+from typing import Union, List
 
 from . import cpp_templates, utils
 from .utils import checked
@@ -474,7 +474,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T>\n"
 	out += "pugi::xml_parse_result load_%s_xml(T &out, std::istream &is){\n" % e.name
-	out += "static_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from RrGraphBase\");\n" % utils.to_pascalcase(e.name)
+	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from RrGraphBase\");\n" % utils.to_pascalcase(e.name)
 	out += "\tpugi::xml_document doc;\n"
 	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
 	out += "\tif(!result) return result;\n"
@@ -595,7 +595,28 @@ def write_fn_from_element(e: UxsdElement) -> str:
 
 #
 
-def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
+def render_interface_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
+	"""Render a C++ header file to a string."""
+	out = ""
+	x = {"version": __version__,
+		"cmdline": cmdline,
+		"input_file": input_file,
+		"md5": utils.md5(input_file)}
+	out += cpp_templates.header_comment.substitute(x)
+	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
+	out += "namespace uxsd {"
+	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
+	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
+	out += "\n".join(enum_tokens)
+
+	out += "\n\n/* Base class for the schema. */\n"
+	out += gen_base_class(schema)
+	out += "\n} /* namespace uxsd */\n"
+
+	return out
+
+
+def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interface_header_file_name: str) -> str:
 	"""Render a C++ header file to a string."""
 	out = ""
 	x = {"version": __version__,
@@ -604,15 +625,9 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		"md5": utils.md5(input_file)}
 	out += cpp_templates.header_comment.substitute(x)
 	out += cpp_templates.includes
+	out += '#include "{}"'.format(interface_header_file_name)
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {"
-
-	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
-	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
-	out += "\n".join(enum_tokens)
-
-	out += "\n\n/* Base class for the schema. */\n"
-	out += gen_base_class(schema)
 
 	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []

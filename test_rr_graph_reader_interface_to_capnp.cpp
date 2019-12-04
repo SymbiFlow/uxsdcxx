@@ -53,7 +53,28 @@ public:
 		auto *sw = static_cast<capnp::Orphan<ucap::Switch>*>(data);
 		sw->get().setName(name);
 	}
-	inline void set_switch_type(uxsd::enum_switch_type type, void * data) override {}
+	inline void set_switch_type(uxsd::enum_switch_type type, void * data) override {
+		auto *sw = static_cast<capnp::Orphan<ucap::Switch>*>(data);
+		switch(type) {
+		case uxsd::enum_switch_type::MUX:
+			sw->get().setType(ucap::SwitchType::MUX);
+			break;
+		case uxsd::enum_switch_type::TRISTATE:
+			sw->get().setType(ucap::SwitchType::TRISTATE);
+			break;
+		case uxsd::enum_switch_type::PASS_GATE:
+			sw->get().setType(ucap::SwitchType::PASS_GATE);
+			break;
+		case uxsd::enum_switch_type::SHORT:
+			sw->get().setType(ucap::SwitchType::SHORT);
+			break;
+		case uxsd::enum_switch_type::BUFFER:
+			sw->get().setType(ucap::SwitchType::BUFFER);
+			break;
+		default:
+			throw std::runtime_error("Unknown SwitchType");
+        }
+    }
 	inline void * init_switch_timing(void * data) override {
 		auto *sw = static_cast<capnp::Orphan<ucap::Switch>*>(data);
 		sw->get().initTiming();

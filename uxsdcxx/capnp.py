@@ -66,9 +66,9 @@ def complex_to_capnp(t: UxsdComplex) -> str:
 	return out
 
 def enum_to_capnp(t: UxsdEnum) -> str:
-	fields = []
+	fields = ['\tuxsdInvalid @0;']
 	for i, e in enumerate(t.enumeration): # hehe
-		fields.append("\t%s @%d;" % (utils.to_camelcase(e), i))
+		fields.append("\t%s @%d;" % (utils.to_camelcase(e), i+1))
 	out = ""
 	out += "enum %s {\n" % to_type(t)
 	out += "\n".join(fields)
@@ -82,6 +82,12 @@ def _gen_conv_enum(t: UxsdEnum) -> str:
 			name=t.name,
 			pname=pname)
 	out += "\tswitch(e) {\n"
+	out += "\tcase ucap::{pname}::{e}:\n".format(
+			pname=pname,
+			e='UXSD_INVALID')
+	out += "\t\treturn enum_{name}::{e};\n".format(
+			name=t.name,
+			e='UXSD_INVALID')
 	for e in t.enumeration:
 		out += "\tcase ucap::{pname}::{e}:\n".format(
 				pname=pname,

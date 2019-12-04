@@ -83,6 +83,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 		_add_field("bool", "has", e.name, "void * data")
 
 	for attr in t.attrs:
+		_add_get_simple(attr)
 		if not pass_at_init(attr):
 			_add_set(attr)
 

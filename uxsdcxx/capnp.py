@@ -78,7 +78,7 @@ def enum_to_capnp(t: UxsdEnum) -> str:
 def _gen_conv_enum(t: UxsdEnum) -> str:
 	pname = utils.to_pascalcase(t.name)
 	out = ""
-	out += "enum_{name} conv_enum_{name}(ucap::{pname} e) {{\n".format(
+	out += "inline enum_{name} conv_enum_{name}(ucap::{pname} e) {{\n".format(
 			name=t.name,
 			pname=pname)
 	out += "\tswitch(e) {\n"
@@ -172,7 +172,7 @@ def render_capnp_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
 def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T>\n"
-	out += "void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data){\n" % e.name
+	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data){\n" % e.name
 	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (
 			utils.to_pascalcase(e.name),
 			utils.to_pascalcase(e.name))
@@ -194,7 +194,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T>\n"
-	out += "void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, void *data){{\n".format(
+	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, void *data){{\n".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 

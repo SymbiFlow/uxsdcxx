@@ -148,7 +148,7 @@ def lookup_from_enum(t: UxsdEnum) -> str:
 	out = ""
 	lookup_tokens = ["\"UXSD_INVALID\""]
 	lookup_tokens += ["\"%s\"" % x for x in t.enumeration]
-	out += "const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
+	out += "static const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_enum(t: UxsdEnum) -> str:
@@ -433,7 +433,7 @@ def load_required_attrs_fn_from_complex_type(t: UxsdComplex) -> str:
 	which can load an XSD complex type from DOM &root into C++ object out.
 	"""
 	out = ""
-	out += "void load_%s_required_attributes(const pugi::xml_node &root, %s){\n" % (
+	out += "inline void load_%s_required_attributes(const pugi::xml_node &root, %s){\n" % (
 			t.name, _gen_required_attribute_arg_list(t.attrs, out=True))
 
 	out += utils.indent(_gen_load_required_attrs(t))
@@ -447,8 +447,11 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T>\n"
-	out += "void load_%s(const pugi::xml_node &root, T &out, void *data){\n" % t.name
+	out += "inline void load_%s(const pugi::xml_node &root, T &out, void *data){\n" % t.name
 
+	out += "\t(void)root;\n"
+	out += "\t(void)out;\n"
+	out += "\t(void)data;\n"
 	out += "\n"
 	if t.attrs:
 		out += utils.indent(_gen_load_attrs(t))
@@ -564,7 +567,7 @@ def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
 		if e.type.attrs:
 			ouv += "os << \"<%s\";\n" % e.name
 			for a in e.type.attrs:
-				ouv += _gen_write_attr(a, e.name, "child_data")
+				ouv += _gen_write_attr(a, e.type.name, "child_data")
 			if e.type.content:
 				ouv += "os << \">\";\n"
 				ouv += "write_%s(in, os, child_data);\n" % e.type.name
@@ -622,11 +625,15 @@ def _gen_write_element(e: UxsdElement, parent: str) -> str:
 		raise TypeError("Unknown type %s." % e.type)
 	return out
 
+
 def write_fn_from_complex_type(t: UxsdComplex) -> str:
 	assert isinstance(t.content, (UxsdDfa, UxsdAll, UxsdLeaf))
 	out = ""
 	out += "template<class T>\n"
-	out += "void write_%s(T &in, std::ostream &os, void *data){\n" % t.name
+	out += "inline void write_%s(T &in, std::ostream &os, void *data){\n" % t.name
+	out += "\t(void)in;\n"
+	out += "\t(void)os;\n"
+	out += "\t(void)data;\n"
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
 		if any(isinstance(e.type, UxsdComplex) for e in t.content.children):
 			out += "\tvoid * child_data;\n"
@@ -644,7 +651,7 @@ def write_fn_from_root_element(e: UxsdElement) -> str:
 	assert isinstance(e.type, UxsdComplex)
 	out = ""
 	out += "template <class T>\n"
-	out += "void write_%s_xml(T &in, std::ostream &os){\n" % e.name
+	out += "inline void write_%s_xml(T &in, std::ostream &os){\n" % e.name
 	out += "static_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (utils.to_pascalcase(e.name), utils.to_pascalcase(e.name))
 	out += "\tvoid *data = NULL;\n"
 
@@ -672,6 +679,9 @@ def render_interface_header_file(schema: UxsdSchema, cmdline: str, input_file: s
 		"md5": utils.md5(input_file)}
 	out += cpp_templates.header_comment.substitute(x)
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
+	out += "\n"
+	out += "#include <cstdlib>\n"
+	out += "\n"
 	out += "namespace uxsd {"
 
 	if schema.enums:
@@ -702,16 +712,18 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interf
 	load_fn_decls = []
 	for t in schema.complex_types:
 		load_fn_decls.append("template <class T>")
-		load_fn_decls.append("void load_%s(const pugi::xml_node &root, T &out, void *data);" % (t.name))
+		load_fn_decls.append("inline void load_%s(const pugi::xml_node &root, T &out, void *data);" % (t.name))
 		if sum(pass_at_init(attr) for attr in t.attrs) > 0:
-			load_fn_decls.append("void load_%s_required_attributes(const pugi::xml_node &root, %s);" % (t.name, _gen_required_attribute_arg_list(t.attrs, out=True)))
+			load_fn_decls.append("inline void load_%s_required_attributes(const pugi::xml_node &root, %s);" % (t.name, _gen_required_attribute_arg_list(t.attrs, out=True)))
 	out += "\n".join(load_fn_decls)
 
 	out += "\n\n/* Declarations for internal write functions for the complex types. */\n"
 	write_fn_decls = []
 	for t in schema.complex_types:
+		if t.content is None:
+			continue
 		write_fn_decls.append("template <class T>")
-		write_fn_decls.append("void write_%s(T &in, std::ostream &os, void *data);" % (t.name))
+		write_fn_decls.append("inline void write_%s(T &in, std::ostream &os, void *data);" % (t.name))
 	out += "\n".join(write_fn_decls)
 
 	out += "\n\n/* Load function for the root element. */\n"

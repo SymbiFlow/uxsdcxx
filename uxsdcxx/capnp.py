@@ -198,6 +198,9 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 
+	out += "\t(void)root;\n"
+	out += "\t(void)out;\n"
+	out += "\t(void)data;\n"
 	out += "\n"
 	for attr in t.attrs:
 		if cpp.pass_at_init(attr):

@@ -571,16 +571,16 @@ def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
 			if e.type.content:
 				ouv += "os << \">\";\n"
 				ouv += "write_%s(in, os, child_data);\n" % e.type.name
-				ouv += "os << \"</%s>\";\n" % e.name
+				ouv += "os << \"</%s>\\n\";\n" % e.name
 			else:
-				ouv += "os << \"/>\";\n"
+				ouv += "os << \"/>\\n\";\n"
 		else:
 			if e.type.content:
-				ouv += "os << \"<%s>\";\n" % e.name
+				ouv += "os << \"<%s>\\n\";\n" % e.name
 				ouv += "write_%s(in, os, child_data);\n" % e.type.name
-				ouv += "os << \"</%s>\";\n" % e.name
+				ouv += "os << \"</%s>\\n\";\n" % e.name
 			else:
-				ouv += "os << \"<%s/>\";\n" % e.name
+				ouv += "os << \"<%s/>\\n\";\n" % e.name
 		return ouv
 
 	if e.many:
@@ -612,13 +612,13 @@ def _gen_write_element(e: UxsdElement, parent: str) -> str:
 	if isinstance(e.type, UxsdSimple):
 		if e.many:
 			out += "for(size_t i=0, n=in.num_%s(data); i<n; i++){\n" % _gen_stub_suffix(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 			out += "}\n"
 		elif e.optional:
 			out += "if((bool)%s)\n" % _gen_write_simple(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 		else:
-			out += "os << \"<%s>\" << %s << \"</%s>\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "os << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 	elif isinstance(e.type, UxsdComplex):
 		out += _gen_write_complex_element(e, parent)
 	else:
@@ -661,9 +661,9 @@ def write_fn_from_root_element(e: UxsdElement) -> str:
 			out += utils.indent(_gen_write_attr(a, e.name))
 	else:
 		out += "\tos << \"<%s\";\n" % e.name
-	out += "\tos << \">\";\n"
+	out += "\tos << \">\\n\";\n"
 	out += "\twrite_%s(in, os, NULL);\n" % e.type.name
-	out += "\tos << \"</%s>\";\n" % e.name
+	out += "\tos << \"</%s>\\n\";\n" % e.name
 
 	out += "}\n"
 	return out

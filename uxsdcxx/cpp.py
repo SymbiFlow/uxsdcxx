@@ -6,7 +6,6 @@ from .version import __version__
 from .third_party import triehash
 from .schema import (
 	UxsdSchema,
-	UxsdUnion,
 	UxsdComplex,
 	UxsdDfa,
 	UxsdAll,

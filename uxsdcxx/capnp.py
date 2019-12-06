@@ -391,22 +391,11 @@ def _gen_write_element(e: UxsdElement, parent: str) -> str:
 	check would create a case split for all simple types again.(how to compare
 	unions? strings? doubles?)
 	"""
+
+	assert isinstance(e.type, UxsdComplex)
 	out = ""
-	if isinstance(e.type, UxsdSimple):
-		if e.many:
-			out += "for(size_t i=0, n=in.num_%s(data, iter); i<n; i++){\n" % cpp._gen_stub_suffix(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
-			out += "}\n"
-		elif e.optional:
-			out += "if((bool)%s)\n" % _gen_write_simple(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
-		else:
-			out += "os << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
-	elif isinstance(e.type, UxsdComplex):
-		out += "\n"
-		out += _gen_write_complex_element(e, parent)
-	else:
-		raise TypeError("Unknown type %s." % e.type)
+	out += "\n"
+	out += _gen_write_complex_element(e, parent)
 
 	return out
 

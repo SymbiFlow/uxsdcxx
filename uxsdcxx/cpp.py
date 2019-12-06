@@ -137,7 +137,7 @@ def gen_base_class(schema: UxsdSchema) -> str:
 
 def tokens_from_enum(t: UxsdEnum) -> str:
 	"""Generate C++ enum of token values from an UxsdEnum"""
-	out = ""
+	out = "\n"
 	enum_tokens = ["UXSD_INVALID = 0"]
 	enum_tokens += [utils.to_token(x) for x in t.enumeration]
 	out += "enum class %s {%s};" % (t.cpp, ", ".join(enum_tokens))
@@ -148,7 +148,7 @@ def lookup_from_enum(t: UxsdEnum) -> str:
 	out = ""
 	lookup_tokens = ["\"UXSD_INVALID\""]
 	lookup_tokens += ["\"%s\"" % x for x in t.enumeration]
-	out += "static const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
+	out += "constexpr const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_enum(t: UxsdEnum) -> str:
@@ -181,12 +181,12 @@ def tokens_from_complex_type(t: UxsdComplex) -> str:
 		enum_tokens = [utils.to_token(e.name) for e in t.content.children]
 		lookup_tokens = ["\"%s\"" % e.name for e in t.content.children]
 		out += "enum class gtok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "static const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
+		out += "constexpr const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
 	if t.attrs:
 		enum_tokens = [utils.to_token(x.name) for x in t.attrs]
 		lookup_tokens = ["\"%s\"" % x.name for x in t.attrs]
 		out += "enum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "static const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
+		out += "constexpr const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_complex_type(t: UxsdComplex) -> str:
@@ -223,9 +223,9 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	assert isinstance(t.content, UxsdDfa)
 	dfa = t.content.dfa
 	out = ""
-	out += "static const int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
-	out += "static const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
-	out += "static int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
+	out += "constexpr int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
+	out += "constexpr const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
+	out += "constexpr int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
 	for i in range(0, max(dfa.states)+1):
 		state = dfa.transitions[i]
 		row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
@@ -508,8 +508,8 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 def load_fn_from_root_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T>\n"
-	out += "pugi::xml_parse_result load_%s_xml(T &out, std::istream &is){\n" % e.name
-	out += "static_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (utils.to_pascalcase(e.name), utils.to_pascalcase(e.name))
+	out += "inline pugi::xml_parse_result load_%s_xml(T &out, std::istream &is){\n" % e.name
+	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (utils.to_pascalcase(e.name), utils.to_pascalcase(e.name))
 	out += "\tpugi::xml_document doc;\n"
 	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
 	out += "\tif(!result) return result;\n"
@@ -531,7 +531,7 @@ def load_fn_from_root_element(e: UxsdElement) -> str:
 
 def _gen_check_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, data: str = "data", itr: str = "iter") -> str:
 	if isinstance(t, UxsdElement) and t.many:
-		return "in.get_%s(i, %s)" % (_gen_stub_suffix(t, parent), data, itr)
+		return "in.get_%s(i, %s, %s)" % (_gen_stub_suffix(t, parent), data, itr)
 	else:
 		return "in.get_%s(%s, %s)" % (_gen_stub_suffix(t, parent), data, itr)
 
@@ -657,7 +657,7 @@ def write_fn_from_root_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T>\n"
 	out += "inline void write_%s_xml(T &in, std::ostream &os){\n" % e.name
-	out += "static_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (utils.to_pascalcase(e.name), utils.to_pascalcase(e.name))
+	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (utils.to_pascalcase(e.name), utils.to_pascalcase(e.name))
 	out += "\tconst void *data = nullptr;\n"
 	out += "\tvoid *iter = nullptr;\n"
 
@@ -687,6 +687,7 @@ def render_interface_header_file(schema: UxsdSchema, cmdline: str, input_file: s
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "\n"
 	out += "#include <cstdlib>\n"
+	out += "#include <tuple>\n"
 	out += "\n"
 	out += "namespace uxsd {"
 

@@ -301,6 +301,190 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	return out
 
 
+def _gen_write_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, data: str = "data", itr: str = "iter") -> str:
+	if isinstance(t.type, UxsdAtomic):
+		if isinstance(t, UxsdElement) and t.many:
+			return "in.get_%s(i, %s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+		else:
+			return "in.get_%s(%s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+	elif isinstance(t.type, UxsdEnum):
+		if isinstance(t, UxsdElement) and t.many:
+			return _gen_set_simple(
+				t.type,
+				input="in.get_{name}(i, {data}, {itr})".format(
+					name=cpp._gen_stub_suffix(t, parent),
+					data=data,
+					itr=itr))
+		else:
+			return _gen_set_simple(
+				t.type,
+				input="in.get_{name}({data}, {itr})".format(
+					name=cpp._gen_stub_suffix(t, parent),
+					data=data,
+					itr=itr))
+	else:
+		raise NotImplementedError(t)
+
+
+def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
+	"""Function to generate partial code which writes out an element with a complex type."""
+	assert isinstance(e.type, UxsdComplex)
+	out = ""
+
+	def _gen_write_element_body(root : str) -> str:
+		assert isinstance(e.type, UxsdComplex)
+		ouv = ""
+		if e.type.attrs:
+			for a in e.type.attrs:
+				ouv += _gen_write_attr(a, e.type.name, root, "child_data", "child_iter")
+			if e.type.content:
+				ouv += "write_{name}_capnp_type(in, {root}, child_data, child_iter);\n".format(
+						root=root,
+						name=e.type.name)
+		else:
+			if e.type.content:
+				ouv += "write_{name}_capnp_type(in, {root}, child_data, child_iter);\n".format(
+						root=root,
+						name=e.type.name)
+
+		return ouv
+
+	name = cpp._gen_stub_suffix(e, parent)
+	if e.many:
+		plural_name = utils.pluralize(cpp._gen_stub_suffix(e, parent))
+		out += "size_t num_{pname} = in.num_{name}(data, iter);\n".format(name=name, pname=plural_name)
+		out += "auto {name} = root.init{pname}(num_{name});\n".format(
+				name=plural_name,
+				pname=utils.pluralize(utils.to_pascalcase(e.name)))
+		out += "for(size_t i = 0; i < num_{name}; i++) {{\n".format(name=plural_name)
+		out += "\tauto {name} = {plural_name}[i];\n".format(
+				name=name,
+				plural_name=plural_name,
+				)
+		out += "\tstd::tie(child_data, child_iter) = in.get_%s(i, data, iter);\n" % cpp._gen_stub_suffix(e, parent)
+		out += utils.indent(_gen_write_element_body(name))
+		out += "}\n"
+	elif e.optional:
+		out += "if(in.has_%s(data, iter)){\n" % cpp._gen_stub_suffix(e, parent)
+		out += "\tauto {name} = root.init{pname}();\n".format(
+				name=name,
+				pname=utils.to_pascalcase(e.name))
+		out += "\tstd::tie(child_data, child_iter) = in.get_%s(data, iter);\n" % cpp._gen_stub_suffix(e, parent)
+		out += utils.indent(_gen_write_element_body(name))
+		out += "}\n"
+	else:
+		out += "std::tie(child_data, child_iter) = in.get_%s(data, iter);\n" % cpp._gen_stub_suffix(e, parent)
+		out += "auto {name} = root.init{pname}();\n".format(
+				name=name,
+				pname=utils.to_pascalcase(e.name))
+		out += _gen_write_element_body(name)
+
+	return out
+
+
+def _gen_write_element(e: UxsdElement, parent: str) -> str:
+	"""Function to generate partial C++ code for writing out a struct generated
+	from an UxsdElement.
+
+	Currently, all values with non-zero default values are emitted.
+	Otherwise, we would have to check against the nonzero value, and the
+	check would create a case split for all simple types again.(how to compare
+	unions? strings? doubles?)
+	"""
+	out = ""
+	if isinstance(e.type, UxsdSimple):
+		if e.many:
+			out += "for(size_t i=0, n=in.num_%s(data, iter); i<n; i++){\n" % cpp._gen_stub_suffix(e, parent)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "}\n"
+		elif e.optional:
+			out += "if((bool)%s)\n" % _gen_write_simple(e, parent)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+		else:
+			out += "os << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+	elif isinstance(e.type, UxsdComplex):
+		out += "\n"
+		out += _gen_write_complex_element(e, parent)
+	else:
+		raise TypeError("Unknown type %s." % e.type)
+
+	return out
+
+
+def write_fn_from_complex_type(t: UxsdComplex) -> str:
+	assert isinstance(t.content, (UxsdDfa, UxsdAll, UxsdLeaf))
+	out = ""
+	out += "template<class T>\n"
+	out += "inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, const void *data, void *iter) {{\n".format(
+			name=t.name,
+			cname=utils.to_pascalcase(t.name))
+	out += "\t(void)in;\n"
+	out += "\t(void)root;\n"
+	out += "\t(void)data;\n"
+	out += "\t(void)iter;\n"
+	if isinstance(t.content, (UxsdDfa, UxsdAll)):
+		if any(isinstance(e.type, UxsdComplex) for e in t.content.children):
+			out += "\tconst void * child_data;\n"
+			out += "\tvoid * child_iter;\n"
+		for e in t.content.children:
+			out += utils.indent(_gen_write_element(e, t.name))
+	elif isinstance(t.content, UxsdLeaf):
+		out += "\troot.setValue(in.get_%s_value(data, iter));\n" % t.name
+	else:
+		out += "\treturn;\n"
+
+	out += "}\n"
+	return out
+
+
+def _gen_check_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, data: str = "data", itr: str = "iter") -> str:
+	if isinstance(t, UxsdElement) and t.many:
+		return "in.get_%s(i, %s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+	else:
+		return "in.get_%s(%s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+
+
+def _gen_write_attr(a: UxsdAttribute, parent: str, root: str = "root", data: str = "data", itr: str = "iter") -> str:
+	"""Function to generate partial code which writes out a single XML attribute."""
+	out = ""
+	if not a.optional or a.default_value:
+		# root.set{pname}(in.get_{}(data, iter);
+		out += "{root}.set{pname}({value});\n".format(
+				root=root,
+				pname=utils.to_pascalcase(a.name),
+				value=_gen_write_simple(a, parent, data, itr))
+	else:
+		out += "if((bool)%s)\n" % _gen_check_simple(a, parent, data, itr)
+		out += "\t{root}.set{pname}({value});\n".format(
+				root=root,
+				pname=utils.to_pascalcase(a.name),
+				value=_gen_write_simple(a, parent, data, itr))
+
+	return out
+
+
+def write_fn_from_root_element(e: UxsdElement) -> str:
+	assert isinstance(e.type, UxsdComplex)
+	out = ""
+	out += "template <class T>\n"
+	out += "inline void write_{name}_capnp(T &in, ucap::{cname}::Builder &root) {{\n".format(
+			name=e.name,
+			cname=utils.to_pascalcase(e.name))
+	out += "\tstatic_assert(std::is_base_of<{pname}Base, T>::value, \"Base class not derived from {pname}Base\");\n".format(
+			pname=utils.to_pascalcase(e.name))
+	out += "\tconst void *data = nullptr;\n"
+	out += "\tvoid *iter = nullptr;\n"
+
+	if e.type.attrs:
+		for a in e.type.attrs:
+			out += utils.indent(_gen_write_attr(a, e.name))
+	out += "\twrite_{name}_capnp_type(in, root, data, iter);\n".format(
+			name=e.name)
+
+	out += "}\n"
+	return out
+
+
 def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, interface_file_name: str, input_file: str) -> str:
 	"""Render a C++ header file to a string."""
 	out = ""
@@ -310,6 +494,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 		"md5": utils.md5(input_file)}
 	out += cpp_templates.header_comment.substitute(x)
 	out += '#include <stdexcept>\n'
+	out += '#include <tuple>\n'
 	out += '#include "capnp/serialize.h"\n'
 	out += '#include "{}.h"\n'.format(capnp_file_name)
 	out += '#include "{}"\n'.format(interface_file_name)
@@ -325,6 +510,17 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 			cname=utils.to_pascalcase(t.name)))
 	out += "\n".join(load_fn_decls)
 
+	out += "\n\n/* Declarations for internal write functions for the complex types. */\n"
+	write_fn_decls = []
+	for t in schema.complex_types:
+		if t.content is None:
+			continue
+		write_fn_decls.append("template <class T>")
+		write_fn_decls.append("inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, const void *data, void *iter);".format(
+			name=t.name,
+			cname=utils.to_pascalcase(t.name)))
+	out += "\n".join(write_fn_decls)
+
 	if schema.enums:
 		enum_converters = [_gen_conv_enum(t) for t in schema.enums]
 		out += "\n\n/* Enum conversions from uxsd to ucap */\n"
@@ -332,11 +528,17 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 
 	out += "\n\n/* Load function for the root element. */\n"
 	out += load_fn_from_element(schema.root_element)
+	out += "\n/* Write function for the root element. */\n"
+	out += write_fn_from_root_element(schema.root_element)
 
 	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
 	out += "\n".join(complex_type_loaders)
+
+	complex_type_writers = [write_fn_from_complex_type(t) for t in schema.complex_types if t.content is not None]
+	out += "\n\n/* Internal writing functions, which uxsdcxx uses to write out a class. */\n"
+	out += "\n".join(complex_type_writers)
 
 	out += "\n\n} /* namespace uxsd */\n"
 	return out

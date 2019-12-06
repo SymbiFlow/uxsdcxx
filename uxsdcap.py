@@ -11,7 +11,7 @@ def main():
 	input_file = os.path.abspath(sys.argv[1])
 	base = os.path.splitext(os.path.basename(input_file))[0]
 	capnp_file_name = base + "_uxsdcxx.capnp"
-	capnp_header_file_name = base + "_uxsdcxx_capnp_reader.h"
+	capnp_header_file_name = base + "_uxsdcxx_capnp.h"
 	capnp_header_impl_file_name = base + "_uxsdcxx_capnp_impl.h"
 	interface_file_name = base + "_uxsdcxx_interface.h"
 	cmdline = " ".join(sys.argv)

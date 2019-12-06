@@ -183,7 +183,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
 	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
 	out += "\n"
-	out += "\tload_{}_capnp_type(root, out, nullptr);\n".format(e.name);
+	out += "\tload_{}_capnp_type(root, out, nullptr, nullptr);\n".format(e.name);
 	out += "}\n"
 	return out
 
@@ -194,19 +194,20 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T>\n"
-	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, void *data){{\n".format(
+	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, const void *data, void *iter){{\n".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 
 	out += "\t(void)root;\n"
 	out += "\t(void)out;\n"
 	out += "\t(void)data;\n"
+	out += "\t(void)iter;\n"
 	out += "\n"
 	for attr in t.attrs:
 		if cpp.pass_at_init(attr):
 			continue
 
-		out += "\tout.set_{suffix}({data}, data);\n".format(
+		out += "\tout.set_{suffix}({data}, data, iter);\n".format(
 			suffix=cpp._gen_stub_suffix(attr, t.name),
             data=_gen_load_simple(attr.type, 'root.get{pname}()'.format(
                 pname=utils.to_pascalcase(attr.name))))
@@ -217,40 +218,48 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 			if el.many:
 				out += "\tfor(const auto & el : root.get{pname}()) {{\n".format(
 						pname=utils.pluralize(name))
+				out += "\t\tconst void *child_data;\n"
+				out += "\t\tvoid *child_iter;\n"
+				out += "\t\t(void)child_data;\n"
+				out += "\t\t(void)iter;\n"
 				if isinstance(el.type, UxsdComplex):
-					out += "\t\tvoid *child_data = out.add_{suffix}(data{required_attrs});\n".format(
+					out += "\t\tstd::tie(child_data, child_iter) = out.add_{suffix}(data, iter{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, 'el'))
-					out += "\t\tload_{suffix}_capnp_type(el, out, child_data);\n".format(
+					out += "\t\tload_{suffix}_capnp_type(el, out, child_data, child_iter);\n".format(
 							suffix=el.type.name)
-					out += "\t\tout.finish_{suffix}(child_data);\n".format(
+					out += "\t\tout.finish_{suffix}(child_data, child_iter);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
 				else:
-					out += "\t\tout.add_{suffix}({data}, data);\n".format(
+					out += "\t\tout.add_{suffix}({data}, data, iter);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							data=_gen_load_simple(el, 'el.get{}()'.format(name))
 							)
 				out += "\t}\n"
 			else:
 				out += "\tif (root.has{pname}()) {{\n".format(pname=name)
+				out += "\t\tconst void *child_data;\n"
+				out += "\t\tvoid *child_iter;\n"
+				out += "\t\t(void)child_data;\n"
+				out += "\t\t(void)iter;\n"
 				if isinstance(el.type, UxsdComplex):
 					access = 'root.get{pname}()'.format(pname=name)
-					out += "\t\tvoid *child_data = out.init_{suffix}(data{required_attrs});\n".format(
+					out += "\t\tstd::tie(child_data, child_iter) = out.init_{suffix}(data, iter{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, access))
-					out += "\t\tload_{suffix}_capnp_type({access}, out, child_data);\n".format(
-                            access=access,
+					out += "\t\tload_{suffix}_capnp_type({access}, out, child_data, child_iter);\n".format(
+							access=access,
 							suffix=el.type.name,
 							pname=name)
-					out += "\t\tout.finish_{suffix}(child_data);\n".format(
+					out += "\t\tout.finish_{suffix}(child_data, child_iter);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
 				else:
-					out += "\t\tout.init_{suffix}({data}, data);\n".format(
+					out += "\t\tout.init_{suffix}({data}, data, iter);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							data=_gen_load_simple(el, 'root.get{name}()'.format(name)))
 				out += "\t}\n"
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tout.set_{name}_value(root.getValue().cStr(), data);\n".format(
+		out += "\tout.set_{name}_value(root.getValue().cStr(), data, iter);\n".format(
 				name=t.name)
 
 	out += "}\n"
@@ -276,7 +285,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	load_fn_decls = []
 	for t in schema.complex_types:
 		load_fn_decls.append("template <class T>")
-		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, void *data);".format(
+		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, const void *data, void *iter);".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name)))
 	out += "\n".join(load_fn_decls)

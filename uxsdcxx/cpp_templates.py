@@ -102,7 +102,7 @@ dfa_error_decl = """
 /**
  * Internal error function for xs:choice and xs:sequence validators.
  */
-inline void dfa_error(const char *wrong, int *states, const char **lookup, int len);
+inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len);
 """
 
 all_error_decl = """
@@ -110,7 +110,7 @@ all_error_decl = """
  * Internal error function for xs:all validators.
  */
 template<std::size_t N>
-inline void all_error(std::bitset<N> gstate, const char **lookup);
+inline void all_error(std::bitset<N> gstate, const char * const *lookup);
 """
 
 attr_error_decl = """
@@ -118,11 +118,11 @@ attr_error_decl = """
  * Internal error function for attribute validators.
  */
 template<std::size_t N>
-inline void attr_error(std::bitset<N> astate, const char **lookup);
+inline void attr_error(std::bitset<N> astate, const char * const *lookup);
 """
 
 dfa_error_defn = """
-inline void dfa_error(const char *wrong, int *states, const char **lookup, int len){
+inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len){
 	std::vector<std::string> expected;
 	for(int i=0; i<len; i++){
 		if(states[i] != -1) expected.push_back(lookup[i]);
@@ -138,7 +138,7 @@ inline void dfa_error(const char *wrong, int *states, const char **lookup, int l
 
 all_error_defn = """
 template<std::size_t N>
-inline void all_error(std::bitset<N> gstate, const char **lookup){
+inline void all_error(std::bitset<N> gstate, const char * const *lookup){
 	std::vector<std::string> missing;
 	for(unsigned int i=0; i<N; i++){
 		if(gstate[i] == 0) missing.push_back(lookup[i]);
@@ -154,7 +154,7 @@ inline void all_error(std::bitset<N> gstate, const char **lookup){
 
 attr_error_defn = """
 template<std::size_t N>
-inline void attr_error(std::bitset<N> astate, const char **lookup){
+inline void attr_error(std::bitset<N> astate, const char * const *lookup){
 	std::vector<std::string> missing;
 	for(unsigned int i=0; i<N; i++){
 		if(astate[i] == 0) missing.push_back(lookup[i]);

@@ -7,11 +7,6 @@
 
 int main(int argc, char * argv[]) {
 
-	::capnp::MallocMessageBuilder builder;
-
-	auto graph = builder.initRoot<ucap::RrGraph>();
-	uxsd::CapnpRrGraph test;
-	test.set_rr_graph_builder(graph);
 
 	if(argc < 3) {
 		throw std::runtime_error("No file argument provided");
@@ -21,7 +16,11 @@ int main(int argc, char * argv[]) {
 	if(!file) {
 		throw std::runtime_error(std::string("File ") + argv[1] + " not found.");
 	}
-	pugi::xml_parse_result result = load_rr_graph_xml(test, file);
+
+	::capnp::MallocMessageBuilder builder;
+	auto graph = builder.initRoot<ucap::RrGraph>();
+	uxsd::CapnpRrGraph test;
+	pugi::xml_parse_result result = load_rr_graph_xml(test, graph, file);
 
 	try {
 		auto fs = kj::newDiskFilesystem();

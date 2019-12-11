@@ -206,11 +206,8 @@ def render_capnp_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
 
 def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
-	out += "template <class T>\n"
-	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data){\n" % e.name
-	out += "\tstatic_assert(std::is_base_of<%sBase, T>::value, \"Base class not derived from %sBase\");\n" % (
-			utils.to_pascalcase(e.name),
-			utils.to_pascalcase(e.name))
+	out += "template <class T, typename Context>\n"
+	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data, Context &context){\n" % e.name
 
 	out += "\t/* Increase reader limit to 1G words. */\n"
 	out += "\t::capnp::ReaderOptions opts = ::capnp::ReaderOptions();\n"
@@ -218,7 +215,9 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
 	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
 	out += "\n"
-	out += "\tload_{}_capnp_type(root, out, nullptr, nullptr);\n".format(e.name);
+	out += "\tout.start_load();\n"
+	out += "\tload_{}_capnp_type(root, out, context);\n".format(e.name);
+	out += "\tout.finish_load();\n"
 	out += "}\n"
 	return out
 
@@ -228,21 +227,20 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	which can load an XSD complex type from DOM &root into C++ object out.
 	"""
 	out = ""
-	out += "template<class T>\n"
-	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, const void *data, void *iter){{\n".format(
+	out += "template<class T, typename Context>\n"
+	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context){{\n".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 
 	out += "\t(void)root;\n"
 	out += "\t(void)out;\n"
-	out += "\t(void)data;\n"
-	out += "\t(void)iter;\n"
+	out += "\t(void)context;\n"
 	out += "\n"
 	for attr in t.attrs:
 		if cpp.pass_at_init(attr):
 			continue
 
-		out += "\tout.set_{suffix}({data}, data, iter);\n".format(
+		out += "\tout.set_{suffix}({data}, context);\n".format(
 			suffix=cpp._gen_stub_suffix(attr, t.name),
             data=_gen_load_simple(attr.type, 'root.get{pname}()'.format(
                 pname=utils.to_pascalcase(attr.name))))
@@ -253,75 +251,65 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 			if el.many:
 				out += "\tfor(const auto & el : root.get{pname}()) {{\n".format(
 						pname=utils.pluralize(name))
-				out += "\t\tconst void *child_data;\n"
-				out += "\t\tvoid *child_iter;\n"
-				out += "\t\t(void)child_data;\n"
-				out += "\t\t(void)iter;\n"
 				if isinstance(el.type, UxsdComplex):
-					out += "\t\tstd::tie(child_data, child_iter) = out.add_{suffix}(data, iter{required_attrs});\n".format(
+					out += "\t\tauto child_context = out.add_{suffix}(context{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, 'el'))
-					out += "\t\tload_{suffix}_capnp_type(el, out, child_data, child_iter);\n".format(
+					out += "\t\tload_{suffix}_capnp_type(el, out, child_context);\n".format(
 							suffix=el.type.name)
-					out += "\t\tout.finish_{suffix}(child_data, child_iter);\n".format(
+					out += "\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
 				else:
-					out += "\t\tout.add_{suffix}({data}, data, iter);\n".format(
+					out += "\t\tout.add_{suffix}({data}, context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							data=_gen_load_simple(el, 'el.get{}()'.format(name))
 							)
 				out += "\t}\n"
 			else:
 				out += "\tif (root.has{pname}()) {{\n".format(pname=name)
-				out += "\t\tconst void *child_data;\n"
-				out += "\t\tvoid *child_iter;\n"
-				out += "\t\t(void)child_data;\n"
-				out += "\t\t(void)iter;\n"
 				if isinstance(el.type, UxsdComplex):
 					access = 'root.get{pname}()'.format(pname=name)
-					out += "\t\tstd::tie(child_data, child_iter) = out.init_{suffix}(data, iter{required_attrs});\n".format(
+					out += "\t\tauto child_context = out.init_{suffix}(context{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, access))
-					out += "\t\tload_{suffix}_capnp_type({access}, out, child_data, child_iter);\n".format(
+					out += "\t\tload_{suffix}_capnp_type({access}, out, child_context);\n".format(
 							access=access,
 							suffix=el.type.name,
 							pname=name)
-					out += "\t\tout.finish_{suffix}(child_data, child_iter);\n".format(
+					out += "\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
 				else:
-					out += "\t\tout.init_{suffix}({data}, data, iter);\n".format(
+					out += "\t\tout.init_{suffix}({data}, context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							data=_gen_load_simple(el, 'root.get{name}()'.format(name)))
 				out += "\t}\n"
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tout.set_{name}_value(root.getValue().cStr(), data, iter);\n".format(
+		out += "\tout.set_{name}_value(root.getValue().cStr(), context);\n".format(
 				name=t.name)
 
 	out += "}\n"
 	return out
 
 
-def _gen_write_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, data: str = "data", itr: str = "iter") -> str:
+def _gen_write_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, context: str = "context") -> str:
 	if isinstance(t.type, UxsdAtomic):
 		if isinstance(t, UxsdElement) and t.many:
-			return "in.get_%s(i, %s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+			return "in.get_%s(i, %s)" % (cpp._gen_stub_suffix(t, parent), context)
 		else:
-			return "in.get_%s(%s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+			return "in.get_%s(%s)" % (cpp._gen_stub_suffix(t, parent), context)
 	elif isinstance(t.type, UxsdEnum):
 		if isinstance(t, UxsdElement) and t.many:
 			return _gen_set_simple(
 				t.type,
-				input="in.get_{name}(i, {data}, {itr})".format(
+				input="in.get_{name}(i, {context})".format(
 					name=cpp._gen_stub_suffix(t, parent),
-					data=data,
-					itr=itr))
+					context=context))
 		else:
 			return _gen_set_simple(
 				t.type,
-				input="in.get_{name}({data}, {itr})".format(
+				input="in.get_{name}({context})".format(
 					name=cpp._gen_stub_suffix(t, parent),
-					data=data,
-					itr=itr))
+					context=context))
 	else:
 		raise NotImplementedError(t)
 
@@ -336,14 +324,14 @@ def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
 		ouv = ""
 		if e.type.attrs:
 			for a in e.type.attrs:
-				ouv += _gen_write_attr(a, e.type.name, root, "child_data", "child_iter")
+				ouv += _gen_write_attr(a, e.type.name, root, "child_context")
 			if e.type.content:
-				ouv += "write_{name}_capnp_type(in, {root}, child_data, child_iter);\n".format(
+				ouv += "write_{name}_capnp_type(in, {root}, child_context);\n".format(
 						root=root,
 						name=e.type.name)
 		else:
 			if e.type.content:
-				ouv += "write_{name}_capnp_type(in, {root}, child_data, child_iter);\n".format(
+				ouv += "write_{name}_capnp_type(in, {root}, child_context);\n".format(
 						root=root,
 						name=e.type.name)
 
@@ -352,7 +340,7 @@ def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
 	name = cpp._gen_stub_suffix(e, parent)
 	if e.many:
 		plural_name = utils.pluralize(cpp._gen_stub_suffix(e, parent))
-		out += "size_t num_{pname} = in.num_{name}(data, iter);\n".format(name=name, pname=plural_name)
+		out += "size_t num_{pname} = in.num_{name}(context);\n".format(name=name, pname=plural_name)
 		out += "auto {name} = root.init{pname}(num_{name});\n".format(
 				name=plural_name,
 				pname=utils.pluralize(utils.to_pascalcase(e.name)))
@@ -361,23 +349,25 @@ def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
 				name=name,
 				plural_name=plural_name,
 				)
-		out += "\tstd::tie(child_data, child_iter) = in.get_%s(i, data, iter);\n" % cpp._gen_stub_suffix(e, parent)
+		out += "\tauto child_context = in.get_%s(i, context);\n" % cpp._gen_stub_suffix(e, parent)
 		out += utils.indent(_gen_write_element_body(name))
 		out += "}\n"
 	elif e.optional:
-		out += "if(in.has_%s(data, iter)){\n" % cpp._gen_stub_suffix(e, parent)
+		out += "if(in.has_%s(context)){\n" % cpp._gen_stub_suffix(e, parent)
 		out += "\tauto {name} = root.init{pname}();\n".format(
 				name=name,
 				pname=utils.to_pascalcase(e.name))
-		out += "\tstd::tie(child_data, child_iter) = in.get_%s(data, iter);\n" % cpp._gen_stub_suffix(e, parent)
+		out += "\tauto child_context = in.get_%s(context);\n" % cpp._gen_stub_suffix(e, parent)
 		out += utils.indent(_gen_write_element_body(name))
 		out += "}\n"
 	else:
-		out += "std::tie(child_data, child_iter) = in.get_%s(data, iter);\n" % cpp._gen_stub_suffix(e, parent)
-		out += "auto {name} = root.init{pname}();\n".format(
+		out += "{\n"
+		out += "\tauto child_context = in.get_%s(context);\n" % cpp._gen_stub_suffix(e, parent)
+		out += "\tauto {name} = root.init{pname}();\n".format(
 				name=name,
 				pname=utils.to_pascalcase(e.name))
-		out += _gen_write_element_body(name)
+		out += utils.indent(_gen_write_element_body(name))
+		out += "}\n"
 
 	return out
 
@@ -403,22 +393,17 @@ def _gen_write_element(e: UxsdElement, parent: str) -> str:
 def write_fn_from_complex_type(t: UxsdComplex) -> str:
 	assert isinstance(t.content, (UxsdDfa, UxsdAll, UxsdLeaf))
 	out = ""
-	out += "template<class T>\n"
-	out += "inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, const void *data, void *iter) {{\n".format(
+	out += "template<class T, typename Context>\n"
+	out += "inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, Context &context) {{\n".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 	out += "\t(void)in;\n"
 	out += "\t(void)root;\n"
-	out += "\t(void)data;\n"
-	out += "\t(void)iter;\n"
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		if any(isinstance(e.type, UxsdComplex) for e in t.content.children):
-			out += "\tconst void * child_data;\n"
-			out += "\tvoid * child_iter;\n"
 		for e in t.content.children:
 			out += utils.indent(_gen_write_element(e, t.name))
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\troot.setValue(in.get_%s_value(data, iter));\n" % t.name
+		out += "\troot.setValue(in.get_%s_value(context));\n" % t.name
 	else:
 		out += "\treturn;\n"
 
@@ -426,28 +411,28 @@ def write_fn_from_complex_type(t: UxsdComplex) -> str:
 	return out
 
 
-def _gen_check_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, data: str = "data", itr: str = "iter") -> str:
+def _gen_check_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, context:str = "context") -> str:
 	if isinstance(t, UxsdElement) and t.many:
-		return "in.get_%s(i, %s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+		return "in.get_%s(i, %s)" % (cpp._gen_stub_suffix(t, parent), context)
 	else:
-		return "in.get_%s(%s, %s)" % (cpp._gen_stub_suffix(t, parent), data, itr)
+		return "in.get_%s(%s)" % (cpp._gen_stub_suffix(t, parent), context)
 
 
-def _gen_write_attr(a: UxsdAttribute, parent: str, root: str = "root", data: str = "data", itr: str = "iter") -> str:
+def _gen_write_attr(a: UxsdAttribute, parent: str, root: str = "root", context:str = "context") -> str:
 	"""Function to generate partial code which writes out a single XML attribute."""
 	out = ""
 	if not a.optional or a.default_value:
-		# root.set{pname}(in.get_{}(data, iter);
+		# root.set{pname}(in.get_{}(context);
 		out += "{root}.set{pname}({value});\n".format(
 				root=root,
 				pname=utils.to_pascalcase(a.name),
-				value=_gen_write_simple(a, parent, data, itr))
+				value=_gen_write_simple(a, parent, context))
 	else:
-		out += "if((bool)%s)\n" % _gen_check_simple(a, parent, data, itr)
+		out += "if((bool)%s)\n" % _gen_check_simple(a, parent, context)
 		out += "\t{root}.set{pname}({value});\n".format(
 				root=root,
 				pname=utils.to_pascalcase(a.name),
-				value=_gen_write_simple(a, parent, data, itr))
+				value=_gen_write_simple(a, parent, context))
 
 	return out
 
@@ -455,20 +440,20 @@ def _gen_write_attr(a: UxsdAttribute, parent: str, root: str = "root", data: str
 def write_fn_from_root_element(e: UxsdElement) -> str:
 	assert isinstance(e.type, UxsdComplex)
 	out = ""
-	out += "template <class T>\n"
-	out += "inline void write_{name}_capnp(T &in, ucap::{cname}::Builder &root) {{\n".format(
+	out += "template <class T, typename Context>\n"
+	out += "inline void write_{name}_capnp(T &in, Context &context, ucap::{cname}::Builder &root) {{\n".format(
 			name=e.name,
 			cname=utils.to_pascalcase(e.name))
-	out += "\tstatic_assert(std::is_base_of<{pname}Base, T>::value, \"Base class not derived from {pname}Base\");\n".format(
-			pname=utils.to_pascalcase(e.name))
-	out += "\tconst void *data = nullptr;\n"
-	out += "\tvoid *iter = nullptr;\n"
+
+	out += "\tin.start_write();\n"
 
 	if e.type.attrs:
 		for a in e.type.attrs:
 			out += utils.indent(_gen_write_attr(a, e.name))
-	out += "\twrite_{name}_capnp_type(in, root, data, iter);\n".format(
+	out += "\twrite_{name}_capnp_type(in, root, context);\n".format(
 			name=e.name)
+
+	out += "\tin.finish_write();\n"
 
 	out += "}\n"
 	return out
@@ -493,8 +478,8 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []
 	for t in schema.complex_types:
-		load_fn_decls.append("template <class T>")
-		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, const void *data, void *iter);".format(
+		load_fn_decls.append("template <class T, typename Context>")
+		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context);".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name)))
 	out += "\n".join(load_fn_decls)
@@ -504,8 +489,8 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	for t in schema.complex_types:
 		if t.content is None:
 			continue
-		write_fn_decls.append("template <class T>")
-		write_fn_decls.append("inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, const void *data, void *iter);".format(
+		write_fn_decls.append("template <class T, typename Context>")
+		write_fn_decls.append("inline void write_{name}_capnp_type(T &in, ucap::{cname}::Builder &root, Context &context);".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name)))
 	out += "\n".join(write_fn_decls)
@@ -533,20 +518,15 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	return out
 
 
+def _gen_reader(e: UxsdComplex):
+	return 'ucap::{}::Reader'.format(utils.to_pascalcase(e.name))
+
+def _gen_builder(e: UxsdComplex):
+	return 'ucap::{}::Builder'.format(utils.to_pascalcase(e.name))
+
+
 def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 	fields = []
-
-	def _get_builder():
-		if is_root:
-			return "auto *builder = &{}_builder_;\n".format(t.name)
-		else:
-			return "auto *builder = static_cast<ucap::{}::Builder*>(iter);\n".format(utils.to_pascalcase(t.name))
-
-	def _get_reader():
-		if is_root:
-			return "const auto *reader = &{}_reader_;\n".format(t.name)
-		else:
-			return "const auto *reader = static_cast<const ucap::{}::Reader*>(iter);\n".format(utils.to_pascalcase(t.name))
 
 	def _add_field(ret: str, verb: str, what: str, args: str, impl: str):
 		fields.append("inline %s %s_%s_%s(%s) override {\n%s}\n" % (ret, verb, t.name, what, args, utils.indent(impl)))
@@ -555,8 +535,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		impl = ""
 		for attr in sorted(e.type.attrs, key=lambda attr: attr.name):
 			if cpp.pass_at_init(attr):
-				impl += '{ename}_builder_.set{pname}({value});\n'.format(
-						ename=e.type.name,
+				impl += 'child_builder.set{pname}({value});\n'.format(
 						pname=utils.to_pascalcase(attr.name),
 						value=_gen_set_simple(attr.type, attr.name))
 		return impl
@@ -576,10 +555,9 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 			return ""
 
 		impl = ""
-		impl += "auto *builder = static_cast<ucap::{}::Builder*>(iter);\n".format(utils.to_pascalcase(e.type.name))
 		for el in e.type.content.children:
 			if el.many:
-				impl += "auto {cname} = builder->init{pname}({name}_.size());\n".format(
+				impl += "auto {cname} = builder.init{pname}({name}_.size());\n".format(
 						cname=cpp.checked(el.name),
 						name=utils.pluralize(el.type.name),
 						pname=utils.to_pascalcase(utils.pluralize(el.name)))
@@ -609,48 +587,43 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 			return ""
 
 		impl = ""
-		impl += _get_builder()
 
 		return impl
 
 	def _add_set(e: Union[UxsdElement, UxsdAttribute]):
 		impl = ""
-		impl += _get_builder()
-		impl += "builder->set{pname}({value});\n".format(
+		impl += "builder.set{pname}({value});\n".format(
 				pname=utils.to_pascalcase(e.name),
 				value=_gen_set_simple(e.type, e.name))
-		_add_field("void", "set", e.name, cpp._gen_attribute_arg(e) + ", const void * data, void * iter", impl)
+		_add_field("void", "set", e.name, "{}, {} &builder".format(cpp._gen_attribute_arg(e), _gen_builder(t)), impl)
 
 	def _add_init(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
 		impl = ""
-		impl += _get_builder()
-		impl += "{ename}_builder_ = builder->init{pname}();\n".format(
-				ename=e.type.name,
+		impl += "auto child_builder = builder.init{pname}();\n".format(
 				pname=utils.to_pascalcase(e.name))
 		impl += _gen_set_required_attrs(e)
-		impl += "return std::make_pair(nullptr, &{}_builder_);\n".format(e.type.name)
-		_add_field("std::pair<const void *, void *>", "init", e.name, cpp._gen_required_attribute_arg_list(e.type.attrs), impl)
+		impl += "return child_builder;\n"
+		_add_field(_gen_builder(e.type), "init", e.name, cpp._gen_required_attribute_arg_list(_gen_builder(t), e.type.attrs, context="builder"), impl)
 
-		_add_field("void", "finish", e.name, "const void * data, void * iter", _gen_finish(e))
+		_add_field("void", "finish", e.name, _gen_builder(e.type) + " &builder", _gen_finish(e))
 
 	def _add_add_simple(e: UxsdElement):
 		impl = ""
-		_add_field("void", "add", e.name, "%s %s, const void * data, void * iter" % (e.type.cpp, cpp.checked(e.name)), impl)
+		_add_field("void", "add", e.name, "{} {}, {} &builder".format(e.type.cpp, cpp.checked(e.name), _gen_builder(t)), impl)
 
 	def _add_add_complex(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
 		impl = ""
-		impl += _get_builder()
-		impl += "auto {name} = capnp::Orphanage::getForMessageContaining(*builder).newOrphan<ucap::{pname}>();\n".format(
+		impl += "auto {name} = capnp::Orphanage::getForMessageContaining(builder).newOrphan<ucap::{pname}>();\n".format(
 				name=cpp.checked(e.name), pname=utils.to_pascalcase(e.type.name))
 		impl += "{pname}_.emplace_back(std::move({name}));\n".format(name=cpp.checked(e.name), pname=utils.pluralize(e.type.name))
-		impl += "{name}_builder_ = {pname}_.back().get();\n".format(name=e.type.name, pname=utils.pluralize(e.type.name))
+		impl += "auto child_builder = {pname}_.back().get();\n".format(name=e.type.name, pname=utils.pluralize(e.type.name))
 		impl += _gen_set_required_attrs(e)
-		impl += "return std::make_pair(nullptr, &{name}_builder_);\n".format(name=e.type.name)
-		_add_field("std::pair<const void *, void *>", "add", e.name, cpp._gen_required_attribute_arg_list(e.type.attrs), impl)
+		impl += "return child_builder;\n"
+		_add_field(_gen_builder(e.type), "add", e.name, cpp._gen_required_attribute_arg_list(_gen_builder(t), e.type.attrs, context="builder"), impl)
 
-		_add_field("void", "finish", e.name, "const void * data, void * iter", _gen_finish(e))
+		_add_field("void", "finish", e.name, _gen_builder(e.type)+" &builder", _gen_finish(e))
 
 	def _add_add(e: UxsdElement):
 		if isinstance(e.type, UxsdSimple): _add_add_simple(e)
@@ -659,46 +632,39 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 
 	def _add_get_simple(e: Union[UxsdElement, UxsdAttribute]):
 		impl = ""
-		impl += _get_reader()
 		impl += "return {value};\n".format(value=_gen_load_simple(
 			e.type,
-			"reader->get{pname}()".format(
+			"reader.get{pname}()".format(
 				pname=utils.to_pascalcase(e.name))))
 
-		_add_field(e.type.cpp, "get", e.name, "const void * data, void * iter", impl)
+		_add_field(e.type.cpp, "get", e.name, _gen_reader(t) + " &reader", impl)
 
 	def _add_get_simple_many(e: UxsdElement):
-		_add_field(e.type.cpp, "get", e.name, "int n, const void * data, void * iter", "")
+		_add_field(e.type.cpp, "get", e.name, "int n, {} &reader".format(_gen_reader(t)), "")
 
 	def _add_get_complex(e: UxsdElement):
 		impl = ""
-		impl += _get_reader()
-		impl += "{name}_reader_ = reader->get{pname}();\n".format(name=e.type.name, pname=utils.to_pascalcase(e.name))
-		impl += "return std::make_pair(nullptr, &{name}_reader_);\n".format(name=e.type.name)
-		_add_field("std::pair<const void *, void *>", "get", e.name, "const void * data, void * iter", impl)
+		impl += "return reader.get{pname}();\n".format(name=e.type.name, pname=utils.to_pascalcase(e.name))
+		_add_field(_gen_reader(e.type), "get", e.name, _gen_reader(t) + " &reader", impl)
 
 	def _add_get_complex_many(e: UxsdElement):
 		impl = ""
-		impl += _get_reader()
-		impl += "{name}_reader_ = reader->get{pname}()[n];\n".format(name=e.type.name, pname=utils.to_pascalcase(utils.pluralize(e.name)))
-		impl += "return std::make_pair(nullptr, &{name}_reader_);\n".format(name=e.type.name)
-		_add_field("std::pair<const void *, void *>", "get", e.name, "int n, const void * data, void * iter", impl)
+		impl += "return reader.get{pname}()[n];\n".format(name=e.type.name, pname=utils.to_pascalcase(utils.pluralize(e.name)))
+		_add_field(_gen_reader(e.type), "get", e.name, "int n, {} &reader".format(_gen_reader(t)), impl)
 
 	def _add_num(e: UxsdElement):
 		impl = ""
-		impl += _get_reader()
-		impl += "return reader->get{pname}().size();\n".format(pname=utils.to_pascalcase(utils.pluralize(e.name)))
-		_add_field("size_t", "num", e.name, "const void * data, void * iter", impl)
+		impl += "return reader.get{pname}().size();\n".format(pname=utils.to_pascalcase(utils.pluralize(e.name)))
+		_add_field("size_t", "num", e.name, _gen_reader(t) + " &reader", impl)
 
 	def _add_has(e: UxsdElement):
 		impl = ""
-		impl += _get_reader()
 		if e.many:
 			pname = utils.to_pascalcase(utils.pluralize(e.name))
 		else:
 			pname = utils.to_pascalcase(e.name)
-		impl += "return reader->has{pname}();\n".format(pname=pname)
-		_add_field("bool", "has", e.name, "const void * data, void * iter", impl)
+		impl += "return reader.has{pname}();\n".format(pname=pname)
+		_add_field("bool", "has", e.name, _gen_reader(t) + " &reader", impl)
 
 	for attr in t.attrs:
 		_add_get_simple(attr)
@@ -728,22 +694,14 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 				raise TypeError(e)
 	elif isinstance(t.content, UxsdLeaf):
 		impl = ""
-		impl += "auto *{var} = static_cast<ucap::{pname}::Builder*>(iter);\n".format(
-				var=cpp.checked(t.name),
-				pname=utils.to_pascalcase(t.name))
-		impl += "{var}->setValue(value);\n".format(
+		impl += "builder.setValue(value);\n".format(
 				var=cpp.checked(t.name))
-		_add_field("void", "set", "value", "%s value, const void * data, void *iter" % t.content.type.cpp, impl)
+		_add_field("void", "set", "value", "{} value, {} &builder".format(t.content.type.cpp, _gen_builder(t)), impl)
 
 		impl = ""
-		impl += "const auto *{var} = static_cast<const ucap::{pname}::Reader*>(data);\n".format(
-				var=cpp.checked(t.name),
-				pname=utils.to_pascalcase(t.name))
 		impl += "return {value};\n".format(value=_gen_load_simple(
-			t.content.type,
-			"{var}->getValue()".format(
-				var=cpp.checked(t.name))))
-		_add_field(t.content.type.cpp, "get", "value", "const void * data, void *iter", impl)
+			t.content.type, "reader.getValue()"))
+		_add_field(t.content.type.cpp, "get", "value", _gen_reader(t) + " &reader", impl)
 
 	return '\n'.join(fields)
 
@@ -768,32 +726,23 @@ def render_impl_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: s
 		out += "\n".join(enum_converters)
 
 	pname = utils.to_pascalcase(schema.root_element.name)
-	out += "class Capnp{pname} : public {pname}Base {{\n".format(
+	out += "class Capnp{pname} : public {pname}Base<\n\t".format(
 			pname=pname)
+	out += ",\n\t".join("/*{pname}ReadContext =*/ ucap::{pname}::Reader".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
+	out += ",\n\t"
+	out += ",\n\t".join("/*{pname}WriteContext =*/ ucap::{pname}::Builder".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
+	out += "\n\t> {\n"
 	out += "public:\n"
-	out += "\tCapnp{pname}() :\n\t".format(pname=pname)
-	out += "\t,".join(" {name}_builder_(nullptr)\n".format(name=t.name) for t in schema.complex_types)
-	out += "\t\t{}\n\n"
-	out += "\tvoid set_{name}_builder(ucap::{pname}::Builder builder) {{\n".format(
-			name=schema.root_element.name,
-			pname=utils.to_pascalcase(schema.root_element.name))
-	out += "\t\t{}_builder_ = builder;\n".format(schema.root_element.name)
-	out += "\t}\n\n"
-	out += "\tvoid set_{name}_reader(ucap::{pname}::Reader reader) {{\n".format(
-			name=schema.root_element.name,
-			pname=utils.to_pascalcase(schema.root_element.name))
-	out += "\t\t{}_reader_ = reader;\n".format(schema.root_element.name)
-	out += "\t}\n\n"
+	out += "\tCapnp{pname}() {{}}\n\n".format(pname=pname)
+
+	out += "\tvoid start_load() override {}\n"
+	out += "\tvoid finish_load() override {}\n"
+	out += "\tvoid start_write() override {}\n"
+	out += "\tvoid finish_write() override {}\n"
+
 	for t in schema.complex_types:
 		out += utils.indent(_gen_capnp_impl(t, t.name == schema.root_element.name))
 	out += "private:\n"
-	for t in schema.complex_types:
-		out += "\tucap::{pname}::Builder {name}_builder_;\n".format(
-				pname=utils.to_pascalcase(t.name),
-				name=t.name)
-		out += "\tucap::{pname}::Reader {name}_reader_;\n\n".format(
-				pname=utils.to_pascalcase(t.name),
-				name=t.name)
 
 	for t in schema.complex_types:
 		if isinstance(t.content, (UxsdDfa, UxsdAll)):

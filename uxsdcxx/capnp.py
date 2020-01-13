@@ -726,12 +726,15 @@ def render_impl_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: s
 		out += "\n".join(enum_converters)
 
 	pname = utils.to_pascalcase(schema.root_element.name)
-	out += "class Capnp{pname} : public {pname}Base<\n\t".format(
+	out += "struct Capnp{pname}ContextTypes : public Default{pname}ContextTypes {{\n\t".format(pname=pname)
+	out += "\n\t".join("using {pname}ReadContext = ucap::{pname}::Reader;".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
+	out += "\n\t"
+	out += "\n\t".join("using {pname}WriteContext = ucap::{pname}::Builder;".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
+	out += "\n};\n"
+	out += "\n"
+
+	out += "class Capnp{pname} : public {pname}Base<Capnp{pname}ContextTypes> {{\n\t".format(
 			pname=pname)
-	out += ",\n\t".join("/*{pname}ReadContext =*/ ucap::{pname}::Reader".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
-	out += ",\n\t"
-	out += ",\n\t".join("/*{pname}WriteContext =*/ ucap::{pname}::Builder".format(pname=utils.to_pascalcase(t.name)) for t in schema.complex_types)
-	out += "\n\t> {\n"
 	out += "public:\n"
 	out += "\tCapnp{pname}() {{}}\n\n".format(pname=pname)
 

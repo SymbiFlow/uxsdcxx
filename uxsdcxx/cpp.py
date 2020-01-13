@@ -46,7 +46,7 @@ def _gen_required_attribute_arg_list(context_type: str, attrs: List[UxsdAttribut
 
 
 def _gen_context_type(t: UxsdComplex, direction : str) -> str:
-	return "{}{}Context".format(utils.to_pascalcase(t.name), direction)
+	return "typename ContextTypes::{}{}Context".format(utils.to_pascalcase(t.name), direction)
 
 
 def _gen_virtual_fns(t: UxsdComplex) -> str:
@@ -127,11 +127,13 @@ def gen_base_class(schema: UxsdSchema) -> str:
 	out = ""
 	root = schema.root_element
 	class_name = utils.to_pascalcase(root.name)
-	out += "template <\n"
-	out += ",\n".join("\ttypename {}ReadContext = void *".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
-	out += ",\n"
-	out += ",\n".join("\ttypename {}WriteContext = void *".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
-	out += "\n\t>\n"
+	out += "struct Default{pname}ContextTypes {{\n".format(pname=class_name)
+	out += "\n\t".join("using {}ReadContext = void *;".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
+	out += "\n"
+	out += "\n\t".join("using {}WriteContext = void *;".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
+	out += "\n};\n"
+	out += "\n"
+	out += "template<typename ContextTypes=Default{pname}ContextTypes>\n".format(pname=class_name)
 	out += "class %sBase {\n" % class_name
 	out += "public:\n"
 	out += "\tvirtual ~%sBase() {}\n" % class_name

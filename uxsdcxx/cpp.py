@@ -139,10 +139,11 @@ def gen_base_class(schema: UxsdSchema) -> str:
 	out += "public:\n"
 	out += "\tvirtual ~%sBase() {}\n" % class_name
 
-	out += "\tvirtual void start_load() = 0;\n"
+	out += "\tvirtual void start_load(const std::function<void(const char*)> *report_error) = 0;\n"
 	out += "\tvirtual void finish_load() = 0;\n"
 	out += "\tvirtual void start_write() = 0;\n"
 	out += "\tvirtual void finish_write() = 0;\n"
+	out += "\tvirtual void error_encountered(const char * file, int line, const char *message) = 0;\n"
 
 	virtual_fns = [_gen_virtual_fns(x) for x in schema.complex_types]
 	out += utils.indent("\n\n".join(virtual_fns))
@@ -179,11 +180,11 @@ def lexer_from_enum(t: UxsdEnum) -> str:
 	to throw otherwise.
 	"""
 	out = ""
-	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp, t.cpp)
+	out += "inline %s lex_%s(const char *in, bool throw_on_invalid, const std::function<void(const char *)> * report_error){\n" % (t.cpp, t.cpp)
 	triehash_alph = [(x, "%s::%s" % (t.cpp, utils.to_token(x))) for x in t.enumeration]
 	out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 	out += "\tif(throw_on_invalid)\n"
-	out += "\t\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \" of %s.\");\n" % t.cpp
+	out += "\t\t(*report_error)((\"Found unrecognized enum value \" + std::string(in) + \" of %s.\").c_str());\n" % t.cpp
 	out += "\treturn %s::UXSD_INVALID;\n" % t.cpp
 	out += "}\n"
 	return out
@@ -215,16 +216,18 @@ def lexer_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		out += "inline gtok_%s lex_node_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline gtok_%s lex_node_%s(const char *in, const std::function<void(const char *)> *report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(e.name, "gtok_%s::%s" % (t.cpp, utils.to_token(e.name))) for e in t.content.children]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\tthrow std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "\t(*report_error)((\"Found unrecognized child \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
+		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
 		out += "}\n"
 	if t.attrs:
-		out += "inline atok_%s lex_attr_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline atok_%s lex_attr_%s(const char *in, const std::function<void(const char *)> * report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(x.name, "atok_%s::%s" % (t.cpp, utils.to_token(x.name))) for x in t.attrs]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\tthrow std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "\t(*report_error)((\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
+		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
 		out += "}\n"
 	return out
 
@@ -256,9 +259,9 @@ def _gen_load_simple(t: UxsdSimple, input: str) -> str:
 	if isinstance(t, UxsdString):
 		return input
 	elif isinstance(t, UxsdEnum):
-		return "lex_%s(%s, true)" % (t.cpp, input)
+		return "lex_%s(%s, true, report_error)" % (t.cpp, input)
 	else:
-		return "load_%s(%s)" % (utils.to_snakecase(t.cpp), input)
+		return "load_%s(%s, report_error)" % (utils.to_snakecase(t.cpp), input)
 
 def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdComplex)
@@ -277,12 +280,12 @@ def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 		load_args.append('&' + arg)
 
 	if len(load_args) > 0:
-		out += "\tload_%s_required_attributes(node, %s);\n" % (t.type.name, ', '.join(load_args))
+		out += "\tload_%s_required_attributes(node, %s, report_error);\n" % (t.type.name, ', '.join(load_args))
 	if t.many:
 		out += "\tauto child_context = out.add_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
 	else:
 		out += "\tauto child_context = out.init_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
-	out += "\tload_%s(node, out, child_context);\n" % t.type.name
+	out += "\tload_%s(node, out, child_context, report_error, offset_debug);\n" % t.type.name
 	out += "\tout.finish_%s(child_context);\n" % _gen_stub_suffix(t, parent)
 	out += "}\n"
 	return out
@@ -336,11 +339,12 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 		out += "{\n"
 		out += "\tint next, state=%d;\n" % dfa.start
 		out += "\tfor(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {\n"
-		out += "\t\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+		out += "\t\t*offset_debug = node.offset_debug();\n"
+		out += "\t\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 		out += "\t\tnext = gstate_%s[state][(int)in];\n" % t.cpp
 		out += "\t\tif(next == -1)\n"
-		out += "\t\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
+		out += "\t\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d, report_error);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
 		out += "\t\tstate = next;\n"
 
 		out += "\t\tswitch(in) {\n";
@@ -365,11 +369,12 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 
 	out += "int next, state=%d;\n" % dfa.start
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\t*offset_debug = node.offset_debug();\n"
+	out += "\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp
 	out += "\tif(next == -1)\n"
-	out += "\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
+	out += "\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d, report_error);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
 	out += "\tstate = next;\n"
 
 	out += "\tswitch(in){\n";
@@ -382,7 +387,7 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 
 	reject_cond = " && ".join(["state != %d" % x for x in dfa.accepts])
 	out += "}\n"
-	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n"\
+	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d, report_error);\n"\
 			% (reject_cond, t.cpp, t.cpp, len(dfa.alphabet))
 
 	return out
@@ -402,10 +407,11 @@ def _gen_load_all(t: UxsdComplex) -> str:
 
 	out += "std::bitset<%d> gstate = 0;\n" % N
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\t*offset_debug = node.offset_debug();\n"
+	out += "\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
-	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
+	out += "\telse (*report_error)((\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
@@ -418,7 +424,7 @@ def _gen_load_all(t: UxsdComplex) -> str:
 
 	mask = "".join(["1" if x.optional else "0" for x in t.content.children][::-1])
 	out += "std::bitset<%d> test_gstate = gstate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_gstate.all()) all_error(test_gstate, gtok_lookup_%s);\n" % t.cpp
+	out += "if(!test_gstate.all()) all_error(test_gstate, gtok_lookup_%s, report_error);\n" % t.cpp
 
 	return out
 
@@ -432,9 +438,9 @@ def _gen_load_required_attrs(t: UxsdComplex) -> str:
 	out = ""
 	out += "std::bitset<%d> astate = 0;\n" % N
 	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
-	out += "\tatok_%s in = lex_attr_%s(attr.name());\n" % (t.cpp, t.cpp)
+	out += "\tatok_%s in = lex_attr_%s(attr.name(), report_error);\n" % (t.cpp, t.cpp)
 	out += "\tif(astate[(int)in] == 0) astate[(int)in] = 1;\n"
-	out += "\telse throw std::runtime_error(\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\");\n" % t.name
+	out += "\telse (*report_error)((\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for attr in t.attrs:
@@ -450,7 +456,7 @@ def _gen_load_required_attrs(t: UxsdComplex) -> str:
 
 	mask = "".join(["1" if x.optional else "0" for x in t.attrs][::-1])
 	out += "std::bitset<%d> test_astate = astate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_%s);\n" % t.cpp
+	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_%s, report_error);\n" % t.cpp
 	return out
 
 
@@ -471,7 +477,7 @@ def _gen_load_attrs(t: UxsdComplex) -> str:
 	assert len(t.attrs) > 0
 	out = ""
 	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
-	out += "\tatok_%s in = lex_attr_%s(attr.name());\n" % (t.cpp, t.cpp)
+	out += "\tatok_%s in = lex_attr_%s(attr.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tswitch(in){\n";
 	for attr in t.attrs:
@@ -489,7 +495,7 @@ def load_required_attrs_fn_from_complex_type(t: UxsdComplex) -> str:
 	which can load an XSD complex type from DOM &root into C++ object out.
 	"""
 	out = ""
-	out += "inline void load_%s_required_attributes(const pugi::xml_node &root, %s){\n" % (
+	out += "inline void load_%s_required_attributes(const pugi::xml_node &root, %s, const std::function<void(const char *)> * report_error){\n" % (
 			t.name, _gen_required_attribute_arg_list("", t.attrs, out=True))
 
 	out += utils.indent(_gen_load_required_attrs(t))
@@ -503,17 +509,20 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T, typename Context>\n"
-	out += "inline void load_%s(const pugi::xml_node &root, T &out, Context &context){\n" % t.name
+	out += "inline void load_%s(const pugi::xml_node &root, T &out, Context &context, const std::function<void(const char*)> *report_error, ptrdiff_t *offset_debug){\n" % t.name
 
 	out += "\t(void)root;\n"
 	out += "\t(void)out;\n"
 	out += "\t(void)context;\n"
+	out += "\t(void)report_error;\n"
+	out += "\t// Update current file offset in case an error is encountered.\n"
+	out += "\t*offset_debug = root.offset_debug();\n"
 	out += "\n"
 	if t.attrs:
 		out += utils.indent(_gen_load_attrs(t))
 	else:
 		out += "\tif(root.first_attribute())\n"
-		out += "\t\tthrow std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
+		out += "\t\t(*report_error)(\"Unexpected attribute in <%s>.\");\n" % t.name
 	out += "\n"
 
 	if isinstance(t.content, UxsdDfa):
@@ -526,7 +535,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 
 	if not isinstance(t.content, (UxsdDfa, UxsdAll)):
 		out += "\tif(root.first_child().type() == pugi::node_element)\n"
-		out += "\t\tthrow std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
+		out += "\t\t(*report_error)(\"Unexpected child element in <%s>.\");\n" % t.name
 	out += "\n"
 
 	out += "}\n"
@@ -542,12 +551,12 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 	which can load an XSD simple type from str and return it.
 	"""
 	out = ""
-	out += "inline %s load_%s(const char *in){\n" % (t.cpp, utils.to_snakecase(t.cpp))
+	out += "inline %s load_%s(const char *in, const std::function<void(const char *)> * report_error){\n" % (t.cpp, utils.to_snakecase(t.cpp))
 	out += "\t%s out;\n" % t.cpp
 	if isinstance(t, UxsdAtomic):
 		out += "\tout = %s;\n" % (t.cpp_load_format % "in")
 		out += "\tif(errno != 0)\n"
-		out += "\t\tthrow std::runtime_error(\"Invalid value `\" + std::string(in) + \"` when loading into a %s.\");\n" % t.cpp
+		out += "\t\t(*report_error)((\"Invalid value `\" + std::string(in) + \"` when loading into a %s.\").c_str());\n" % t.cpp
 	elif isinstance(t, UxsdEnum):
 		out += "\tout = lex_%s(in, true);\n" % t.cpp
 	else:
@@ -561,23 +570,41 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 def load_fn_from_root_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T, typename Context>\n"
-	out += "inline pugi::xml_parse_result load_%s_xml(T &out, Context &context, std::istream &is){\n" % e.name
+	out += "inline void load_%s_xml(T &out, Context &context, const char * filename, std::istream &is){\n" % e.name
 	out += "\tpugi::xml_document doc;\n"
 	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
-	out += "\tif(!result) return result;\n"
-	out += "\tout.start_load();\n"
-	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
+	out += "\tif(!result) {\n"
+	out += "\t\tint line, col;\n"
+	out += "\t\tget_line_number(filename, result.offset, &line, &col);\n"
+	out += "\t\tstd::stringstream msg;\n"
+	out += "\t\tmsg << \"Unable to load XML file '\" << filename << \"', \";\n"
+	out += "\t\tmsg << result.description() << \" (line: \" << line;\n"
+	out += "\t\tmsg << \" col: \" << col << \")\";"
+	out += "\t\tout.error_encountered(filename, line, msg.str().c_str());\n"
+	out += "\t}\n"
+	out += "\tptrdiff_t offset_debug = 0;\n"
+	out += "\tstd::function<void(const char *)> report_error = [filename, &out, &offset_debug](const char * message) {\n"
+	out += "\t\tint line, col;\n"
+	out += "\t\tget_line_number(filename, offset_debug, &line, &col);\n"
+	out += "\t\tout.error_encountered(filename, line, message);\n"
+	out += "\t\t// If error_encountered didn't throw, throw now to unwind.\n"
+	out += "\t\tthrow std::runtime_error(message);\n"
+	out += "\t};\n"
+	out += "\tout.start_load(&report_error);\n"
+	out += "\t\n"
 
+	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
 	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % e.name
 	out += "\t\t\t/* If errno is set up to this point, it messes with strtol errno checking. */\n"
 	out += "\t\t\terrno = 0;\n"
-	out += "\t\t\tload_%s(node, out, context);\n" % e.type.name
+	out += "\t\t\tload_%s(node, out, context, &report_error, &offset_debug);\n" % e.type.name
 
+	out += "\t\t} else {\n"
+	out += "\t\t\toffset_debug = node.offset_debug();\n"
+	out += "\t\t\treport_error((\"Invalid root-level element \" + std::string(node.name())).c_str());\n"
 	out += "\t\t}\n"
-	out += "\t\telse throw std::runtime_error(\"Invalid root-level element \" + std::string(node.name()));\n"
 	out += "\t}\n"
 	out += "\tout.finish_load();\n"
-	out += "\treturn result;\n"
 	out += "}\n"
 	return out
 
@@ -764,15 +791,17 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interf
 	out += cpp_templates.includes
 	out += '#include "{}"'.format(interface_header_file_name)
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {"
+	out += "namespace uxsd {\n"
+
+	out += cpp_templates.get_line_number_decl
 
 	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []
 	for t in schema.complex_types:
 		load_fn_decls.append("template <class T, typename Context>")
-		load_fn_decls.append("inline void load_%s(const pugi::xml_node &root, T &out, Context &context);" % (t.name))
+		load_fn_decls.append("inline void load_%s(const pugi::xml_node &root, T &out, Context &context, const std::function<void(const char*)> *report_error, ptrdiff_t *offset_debug);" % (t.name))
 		if sum(pass_at_init(attr) for attr in t.attrs) > 0:
-			load_fn_decls.append("inline void load_%s_required_attributes(const pugi::xml_node &root, %s);" % (t.name, _gen_required_attribute_arg_list("", t.attrs, out=True)))
+			load_fn_decls.append("inline void load_%s_required_attributes(const pugi::xml_node &root, %s, const std::function<void(const char*)> * report_error);" % (t.name, _gen_required_attribute_arg_list("", t.attrs, out=True)))
 	out += "\n".join(load_fn_decls)
 
 	out += "\n\n/* Declarations for internal write functions for the complex types. */\n"
@@ -834,6 +863,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interf
 		out += cpp_templates.all_error_defn
 	if schema.has_attr:
 		out += cpp_templates.attr_error_defn
+	out += cpp_templates.get_line_number_defn
 
 	out += "\n\n} /* namespace uxsd */\n"
 	return out

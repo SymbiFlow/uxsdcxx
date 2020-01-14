@@ -70,6 +70,9 @@ header_comment = Template("""#pragma once
  * Input file: $input_file
  * md5sum of input file: $md5
  */
+
+#include <functional>
+
 """)
 
 impl_comment = Template("""/*
@@ -88,6 +91,7 @@ includes = """
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -96,13 +100,14 @@ includes = """
 #include <stddef.h>
 #include <stdint.h>
 #include "pugixml.hpp"
+
 """
 
 dfa_error_decl = """
 /**
  * Internal error function for xs:choice and xs:sequence validators.
  */
-inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len);
+inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len, const std::function<void(const char *)> * report_error);
 """
 
 all_error_decl = """
@@ -110,7 +115,7 @@ all_error_decl = """
  * Internal error function for xs:all validators.
  */
 template<std::size_t N>
-inline void all_error(std::bitset<N> gstate, const char * const *lookup);
+inline void all_error(std::bitset<N> gstate, const char * const *lookup, const std::function<void(const char *)> * report_error);
 """
 
 attr_error_decl = """
@@ -118,11 +123,19 @@ attr_error_decl = """
  * Internal error function for attribute validators.
  */
 template<std::size_t N>
-inline void attr_error(std::bitset<N> astate, const char * const *lookup);
+inline void attr_error(std::bitset<N> astate, const char * const *lookup, const std::function<void(const char *)> * report_error);
+"""
+
+get_line_number_decl = """
+/**
+ * Internal function for getting line and column number from file based on
+ * byte offset.
+ */
+inline void get_line_number(const char *filename, std::ptrdiff_t offset, int * line, int * col);
 """
 
 dfa_error_defn = """
-inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len){
+inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len, const std::function<void(const char *)> * report_error){
 	std::vector<std::string> expected;
 	for(int i=0; i<len; i++){
 		if(states[i] != -1) expected.push_back(lookup[i]);
@@ -132,13 +145,13 @@ inline void dfa_error(const char *wrong, const int *states, const char * const *
 	for(unsigned int i=1; i<expected.size(); i++)
 		expected_or += std::string(" or ") + expected[i];
 
-	throw std::runtime_error("Expected " + expected_or + ", found " + std::string(wrong));
+	(*report_error)(("Expected " + expected_or + ", found " + std::string(wrong)).c_str());
 }
 """
 
 all_error_defn = """
 template<std::size_t N>
-inline void all_error(std::bitset<N> gstate, const char * const *lookup){
+inline void all_error(std::bitset<N> gstate, const char * const *lookup, const std::function<void(const char *)> * report_error){
 	std::vector<std::string> missing;
 	for(unsigned int i=0; i<N; i++){
 		if(gstate[i] == 0) missing.push_back(lookup[i]);
@@ -148,13 +161,13 @@ inline void all_error(std::bitset<N> gstate, const char * const *lookup){
 	for(unsigned int i=1; i<missing.size(); i++)
 		missing_and += std::string(", ") + missing[i];
 
-	throw std::runtime_error("Didn't find required elements " + missing_and + ".");
+	(*report_error)(("Didn't find required elements " + missing_and + ".").c_str());
 }
 """
 
 attr_error_defn = """
 template<std::size_t N>
-inline void attr_error(std::bitset<N> astate, const char * const *lookup){
+inline void attr_error(std::bitset<N> astate, const char * const *lookup, const std::function<void(const char *)> * report_error){
 	std::vector<std::string> missing;
 	for(unsigned int i=0; i<N; i++){
 		if(astate[i] == 0) missing.push_back(lookup[i]);
@@ -164,6 +177,50 @@ inline void attr_error(std::bitset<N> astate, const char * const *lookup){
 	for(unsigned int i=1; i<missing.size(); i++)
 		missing_and += std::string(", ") + missing[i];
 
-	throw std::runtime_error("Didn't find required attributes " + missing_and + ".");
+	(*report_error)(("Didn't find required attributes " + missing_and + ".").c_str());
+}
+"""
+
+get_line_number_defn = """
+inline void get_line_number(const char *filename, std::ptrdiff_t target_offset, int * line, int * col) {
+	FILE* f = fopen(filename, "rb");
+
+	if (f == nullptr) {
+		throw std::runtime_error(std::string("Failed to open file") + filename);
+	}
+
+	int current_line = 1;
+	std::ptrdiff_t offset = 0;
+	std::ptrdiff_t last_line_offset = 0;
+	std::ptrdiff_t current_line_offset = 0;
+
+	char buffer[1024];
+	std::size_t size;
+
+	while ((size = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+		for (std::size_t i = 0; i < size; ++i) {
+			if (buffer[i] == '\\n') {
+				current_line += 1;
+				last_line_offset = current_line_offset;
+				current_line_offset = offset + i;
+
+				if(target_offset < current_line_offset) {
+					if(target_offset < last_line_offset) {
+						throw std::runtime_error("Assertion violation");
+					}
+
+					*line = current_line - 1;
+					*col = target_offset - last_line_offset;
+					return;
+				}
+			}
+		}
+
+		offset += size;
+	}
+
+	*line = current_line;
+	*col = target_offset - current_line_offset;
+	fclose(f);
 }
 """

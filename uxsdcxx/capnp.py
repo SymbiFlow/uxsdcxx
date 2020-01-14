@@ -80,7 +80,7 @@ def enum_to_capnp(t: UxsdEnum) -> str:
 def _gen_conv_enum(t: UxsdEnum) -> str:
 	pname = utils.to_pascalcase(t.name)
 	out = ""
-	out += "inline enum_{name} conv_enum_{name}(ucap::{pname} e) {{\n".format(
+	out += "inline enum_{name} conv_enum_{name}(ucap::{pname} e, const std::function<void(const char *)> * report_error) {{\n".format(
 			name=t.name,
 			pname=pname)
 	out += "\tswitch(e) {\n"
@@ -98,7 +98,7 @@ def _gen_conv_enum(t: UxsdEnum) -> str:
 				name=t.name,
 				e=e.upper())
 	out += "\tdefault:\n"
-	out += '\t\tthrow std::runtime_error("Unknown enum_{name}");\n'.format(name=t.name)
+	out += '\t\t(*report_error)("Unknown enum_{name}");\n'.format(name=t.name)
 	out += "\t}\n"
 	out += "}\n"
 	out += "\n"
@@ -146,7 +146,7 @@ def _gen_load_simple(t: UxsdSimple, input: str) -> str:
 	if isinstance(t, UxsdString):
 		return input + '.cStr()'
 	elif isinstance(t, UxsdEnum):
-		return 'conv_enum_{type}({input})'.format(
+		return 'conv_enum_{type}({input}, report_error)'.format(
 				type=t.name,
 				input=input)
 	else:
@@ -207,16 +207,32 @@ def render_capnp_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
 def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
 	out += "template <class T, typename Context>\n"
-	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data, Context &context){\n" % e.name
+	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data, Context &context, const char * filename){\n" % e.name
 
 	out += "\t/* Increase reader limit to 1G words. */\n"
 	out += "\t::capnp::ReaderOptions opts = ::capnp::ReaderOptions();\n"
 	out += "\topts.traversalLimitInWords = 1024 * 1024 * 1024;\n"
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
 	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
+	out += "\tstd::vector<std::pair<const char*, size_t>> stack;\n"
+	out += "\tstack.reserve(20);\n"
+	out += "\tstack.push_back(std::make_pair(\"root\", 0));\n"
 	out += "\n"
-	out += "\tout.start_load();\n"
-	out += "\tload_{}_capnp_type(root, out, context);\n".format(e.name);
+	out += "\tstd::function<void(const char *)> report_error = [filename, &out, &stack](const char *message){\n"
+	out += "\t\tstd::stringstream msg;\n"
+	out += "\t\tmsg << message << std::endl;\n"
+	out += "\t\tmsg << \"Error occured at \";\n"
+	out += "\t\tfor(size_t i = 0; i < stack.size(); ++i) {\n"
+	out += "\t\t\tmsg << stack[i].first << \"[\" << stack[i].second << \"]\";\n"
+	out += "\t\t\tif(i+1 < stack.size()) {\n"
+	out += "\t\t\t\tmsg << \" . \";\n"
+	out += "\t\t\t}\n"
+	out += "\t\t}\n"
+
+	out += "\t\tout.error_encountered(filename, -1, msg.str().c_str());\n"
+	out += "};\n"
+	out += "\tout.start_load(&report_error);\n"
+	out += "\tload_{}_capnp_type(root, out, context, &report_error, &stack);\n".format(e.name);
 	out += "\tout.finish_load();\n"
 	out += "}\n"
 	return out
@@ -228,13 +244,15 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	out += "template<class T, typename Context>\n"
-	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context){{\n".format(
+	out += "inline void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context, const std::function<void(const char*)> * report_error, std::vector<std::pair<const char *, size_t>> * stack){{\n".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name))
 
 	out += "\t(void)root;\n"
 	out += "\t(void)out;\n"
 	out += "\t(void)context;\n"
+	out += "\t(void)report_error;\n"
+	out += "\t(void)stack;\n"
 	out += "\n"
 	for attr in t.attrs:
 		if cpp.pass_at_init(attr):
@@ -248,6 +266,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
 		for el in t.content.children:
 			name = utils.to_pascalcase(el.name)
+			out += "\tstack->push_back(std::make_pair(\"get{}\", 0));".format(name)
 			if el.many:
 				out += "\t{\n"
 				suffix = cpp._gen_stub_suffix(el, t.name)
@@ -259,7 +278,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 					out += "\t\t\tauto child_context = out.add_{suffix}(context{required_attrs});\n".format(
 							suffix=suffix,
 							required_attrs=_gen_required_attribute_arg_list(el, 'el'))
-					out += "\t\t\tload_{suffix}_capnp_type(el, out, child_context);\n".format(
+					out += "\t\t\tload_{suffix}_capnp_type(el, out, child_context, report_error, stack);\n".format(
 							suffix=el.type.name)
 					out += "\t\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=suffix)
@@ -268,6 +287,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 							suffix=suffix,
 							data=_gen_load_simple(el, 'el.get{}()'.format(name))
 							)
+				out += "\t\t\tstack->back().second += 1;\n"
 				out += "\t\t}\n"
 				out += "\t}\n"
 			else:
@@ -277,7 +297,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 					out += "\t\tauto child_context = out.init_{suffix}(context{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, access))
-					out += "\t\tload_{suffix}_capnp_type({access}, out, child_context);\n".format(
+					out += "\t\tload_{suffix}_capnp_type({access}, out, child_context, report_error, stack);\n".format(
 							access=access,
 							suffix=el.type.name,
 							pname=name)
@@ -288,9 +308,13 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							data=_gen_load_simple(el, 'root.get{name}()'.format(name)))
 				out += "\t}\n"
+
+			out += "\tstack->pop_back();\n"
 	elif isinstance(t.content, UxsdLeaf):
+		out += "\tstack->push_back(std::make_pair(\"getValue\", 0));"
 		out += "\tout.set_{name}_value(root.getValue().cStr(), context);\n".format(
 				name=t.name)
+		out += "\tstack->pop_back();\n"
 
 	out += "}\n"
 	return out
@@ -474,6 +498,8 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	out += cpp_templates.header_comment.substitute(x)
 	out += '#include <stdexcept>\n'
 	out += '#include <tuple>\n'
+	out += '#include <vector>\n'
+	out += '#include <sstream>\n'
 	out += '#include "capnp/serialize.h"\n'
 	out += '#include "{}.h"\n'.format(capnp_file_name)
 	out += '#include "{}"\n'.format(interface_file_name)
@@ -484,7 +510,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	load_fn_decls = []
 	for t in schema.complex_types:
 		load_fn_decls.append("template <class T, typename Context>")
-		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context);".format(
+		load_fn_decls.append("void load_{name}_capnp_type(const ucap::{cname}::Reader &root, T &out, Context &context, const std::function<void(const char*)> * report_error, std::vector<std::pair<const char *, size_t>> * stack);".format(
 			name=t.name,
 			cname=utils.to_pascalcase(t.name)))
 	out += "\n".join(load_fn_decls)
@@ -747,14 +773,22 @@ def render_impl_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: s
 	out += "public:\n"
 	out += "\tCapnp{pname}() {{}}\n\n".format(pname=pname)
 
-	out += "\tvoid start_load() override {}\n"
+	out += "\tvoid start_load(const std::function<void(const char *)> *report_error_in) override {\n"
+	out += "\t\treport_error = report_error_in;\n"
+	out += "\t}\n"
 	out += "\tvoid finish_load() override {}\n"
 	out += "\tvoid start_write() override {}\n"
 	out += "\tvoid finish_write() override {}\n"
+	out += "\tvoid error_encountered(const char * file, int line, const char *message) override {\n"
+	out += "\t\tstd::stringstream msg;"
+	out += "\t\tmsg << message << \" occured at file: \" << file << \" line: \" << line;\n"
+	out += "\t\tthrow std::runtime_error(msg.str());\n"
+	out += "\t}\n"
 
 	for t in schema.complex_types:
 		out += utils.indent(_gen_capnp_impl(t, t.name == schema.root_element.name))
 	out += "private:\n"
+	out += "\tconst std::function<void(const char *)> *report_error;\n"
 
 	for t in schema.complex_types:
 		if isinstance(t.content, (UxsdDfa, UxsdAll)):

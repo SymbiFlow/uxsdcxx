@@ -65,6 +65,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 		_add_field("void", "add", e.name, "{} {}, {} &ctx" % (e.type.cpp, checked(e.name), _gen_context_type(t, "Write")))
 	def _add_add_complex(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
+		_add_field("void", "preallocate", e.name, _gen_context_type(t, "Write") + " &ctx, size_t size")
 		_add_field(_gen_context_type(e.type, "Write"), "add", e.name, _gen_required_attribute_arg_list(_gen_context_type(t, "Write"), e.type.attrs))
 		_add_field("void", "finish", e.name, _gen_context_type(e.type, "Write") + " &ctx")
 	def _add_add(e: UxsdElement):
@@ -321,7 +322,47 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 	"""
 	assert isinstance(t.content, UxsdDfa)
 	dfa = t.content.dfa
+
+	any_many = False
 	out = ""
+	for el in t.content.children:
+		if el.many:
+			if not any_many:
+				out += "// Preallocate arrays by counting child nodes (if any)\n"
+			out += "size_t {tag}_count = 0;\n".format(tag=el.name)
+			any_many = True
+
+	if any_many:
+		out += "{\n"
+		out += "\tint next, state=%d;\n" % dfa.start
+		out += "\tfor(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {\n"
+		out += "\t\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+
+		out += "\t\tnext = gstate_%s[state][(int)in];\n" % t.cpp
+		out += "\t\tif(next == -1)\n"
+		out += "\t\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
+		out += "\t\tstate = next;\n"
+
+		out += "\t\tswitch(in) {\n";
+		for el in t.content.children:
+			out += "\t\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
+			if el.many:
+				out += "\t\t\t{tag}_count += 1;\n".format(tag=el.name)
+			out += "\t\t\tbreak;\n"
+		out += "\t\tdefault: break; /* Not possible. */\n"
+		out += "\t\t}\n"
+		out += "\t}\n"
+		out += "\t\n"
+
+		for el in t.content.children:
+			if el.many:
+				out += "\tout.preallocate_{stub}(context, {tag}_count);\n".format(
+						stub=_gen_stub_suffix(el, t.name),
+						tag=el.name
+						)
+
+		out += "}\n"
+
 	out += "int next, state=%d;\n" % dfa.start
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
 	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)

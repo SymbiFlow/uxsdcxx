@@ -249,21 +249,26 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 		for el in t.content.children:
 			name = utils.to_pascalcase(el.name)
 			if el.many:
-				out += "\tfor(const auto & el : root.get{pname}()) {{\n".format(
-						pname=utils.pluralize(name))
+				out += "\t{\n"
+				suffix = cpp._gen_stub_suffix(el, t.name)
+				out += "\t\tauto data = root.get{pname}();\n".format(pname=utils.pluralize(name))
+				out += "\t\tout.preallocate_{suffix}(context, data.size());\n".format(suffix=suffix)
+
+				out += "\t\tfor(const auto & el : data) {\n"
 				if isinstance(el.type, UxsdComplex):
-					out += "\t\tauto child_context = out.add_{suffix}(context{required_attrs});\n".format(
-							suffix=cpp._gen_stub_suffix(el, t.name),
+					out += "\t\t\tauto child_context = out.add_{suffix}(context{required_attrs});\n".format(
+							suffix=suffix,
 							required_attrs=_gen_required_attribute_arg_list(el, 'el'))
-					out += "\t\tload_{suffix}_capnp_type(el, out, child_context);\n".format(
+					out += "\t\t\tload_{suffix}_capnp_type(el, out, child_context);\n".format(
 							suffix=el.type.name)
-					out += "\t\tout.finish_{suffix}(child_context);\n".format(
-							suffix=cpp._gen_stub_suffix(el, t.name))
+					out += "\t\t\tout.finish_{suffix}(child_context);\n".format(
+							suffix=suffix)
 				else:
-					out += "\t\tout.add_{suffix}({data}, context);\n".format(
-							suffix=cpp._gen_stub_suffix(el, t.name),
+					out += "\t\t\tout.add_{suffix}({data}, context);\n".format(
+							suffix=suffix,
 							data=_gen_load_simple(el, 'el.get{}()'.format(name))
 							)
+				out += "\t\t}\n"
 				out += "\t}\n"
 			else:
 				out += "\tif (root.has{pname}()) {{\n".format(pname=name)
@@ -622,6 +627,10 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		impl += _gen_set_required_attrs(e)
 		impl += "return child_builder;\n"
 		_add_field(_gen_builder(e.type), "add", e.name, cpp._gen_required_attribute_arg_list(_gen_builder(t), e.type.attrs, context="builder"), impl)
+
+		impl = ""
+		impl = "{pname}_.reserve(size);\n".format(pname=utils.pluralize(e.type.name))
+		_add_field("void", "preallocate", e.name, _gen_builder(t) + "&, size_t size", impl)
 
 		_add_field("void", "finish", e.name, _gen_builder(e.type)+" &builder", _gen_finish(e))
 

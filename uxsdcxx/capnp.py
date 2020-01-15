@@ -99,6 +99,7 @@ def _gen_conv_enum(t: UxsdEnum) -> str:
 				e=e.upper())
 	out += "\tdefault:\n"
 	out += '\t\t(*report_error)("Unknown enum_{name}");\n'.format(name=t.name)
+	out += "\t\tthrow std::runtime_error(\"Unreachable!\");\n"
 	out += "\t}\n"
 	out += "}\n"
 	out += "\n"
@@ -203,6 +204,8 @@ def render_capnp_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
 	out += "\n"
 	return out
 
+# Initial memory allocation for capnp stack for error reporting.
+INITIAL_STACK_DEPTH = 20
 
 def load_fn_from_element(e: UxsdElement) -> str:
 	out = ""
@@ -215,7 +218,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
 	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
 	out += "\tstd::vector<std::pair<const char*, size_t>> stack;\n"
-	out += "\tstack.reserve(20);\n"
+	out += "\tstack.reserve({});\n".format(INITIAL_STACK_DEPTH)
 	out += "\tstack.push_back(std::make_pair(\"root\", 0));\n"
 	out += "\n"
 	out += "\tstd::function<void(const char *)> report_error = [filename, &out, &stack](const char *message){\n"
@@ -230,7 +233,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "\t\t}\n"
 
 	out += "\t\tout.error_encountered(filename, -1, msg.str().c_str());\n"
-	out += "};\n"
+	out += "\t};\n"
 	out += "\tout.start_load(&report_error);\n"
 	out += "\tload_{}_capnp_type(root, out, context, &report_error, &stack);\n".format(e.name);
 	out += "\tout.finish_load();\n"
@@ -266,7 +269,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
 		for el in t.content.children:
 			name = utils.to_pascalcase(el.name)
-			out += "\tstack->push_back(std::make_pair(\"get{}\", 0));".format(name)
+			out += "\tstack->push_back(std::make_pair(\"get{}\", 0));\n".format(name)
 			if el.many:
 				out += "\t{\n"
 				suffix = cpp._gen_stub_suffix(el, t.name)
@@ -311,7 +314,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 
 			out += "\tstack->pop_back();\n"
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tstack->push_back(std::make_pair(\"getValue\", 0));"
+		out += "\tstack->push_back(std::make_pair(\"getValue\", 0));\n"
 		out += "\tout.set_{name}_value(root.getValue().cStr(), context);\n".format(
 				name=t.name)
 		out += "\tstack->pop_back();\n"

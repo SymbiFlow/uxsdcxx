@@ -12,15 +12,10 @@ int main(int argc, char * argv[]) {
 		throw std::runtime_error("No file argument provided");
 	}
 
-	std::ifstream file(argv[1]);
-	if(!file) {
-		throw std::runtime_error(std::string("File ") + argv[1] + " not found.");
-	}
-
 	::capnp::MallocMessageBuilder builder;
 	auto graph = builder.initRoot<ucap::RrGraph>();
 	uxsd::CapnpRrGraph test;
-	pugi::xml_parse_result result = load_rr_graph_xml(test, graph, file);
+	load_rr_graph_xml(test, graph, argv[1]);
 
 	try {
 		auto fs = kj::newDiskFilesystem();

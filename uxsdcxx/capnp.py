@@ -296,7 +296,8 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 			else:
 				out += "\tif (root.has{pname}()) {{\n".format(pname=name)
 				if isinstance(el.type, UxsdComplex):
-					access = 'root.get{pname}()'.format(pname=name)
+					out += "\t\tauto child_el = root.get{pname}();\n".format(pname=name)
+					access = 'child_el'
 					out += "\t\tauto child_context = out.init_{suffix}(context{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
 							required_attrs=_gen_required_attribute_arg_list(el, access))

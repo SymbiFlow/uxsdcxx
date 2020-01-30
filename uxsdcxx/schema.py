@@ -1,10 +1,9 @@
 import re
 
-from typing import Any, Callable, List, Tuple, Dict, Set, Union, Optional
+from typing import List, Union, Optional
 from functools import lru_cache
 from xml.etree import ElementTree as ET # type: ignore
 
-import xmlschema # type: ignore
 from xmlschema.validators import ( # type: ignore
     XsdAttribute,
     XsdAtomicBuiltin,
@@ -14,12 +13,11 @@ from xmlschema.validators import ( # type: ignore
     XsdGroup,
     XsdSimpleType,
     XsdList,
-    XsdType,
     XsdUnion,
     XMLSchema10,
 )
 
-from . import utils, cpp_templates as tpl
+from . import cpp_templates as tpl
 from .dfa import dfa_from_group, XsdDFA
 
 class UxsdType:
@@ -41,7 +39,7 @@ class UxsdSourcable:
 		# Fixes ET's indentation and removes the namespace attribute.
 		out = ET.tostring(self.xml_elem).decode()
 		out = re.sub(r'xmlns:xs="(.*?)" ', r'', out)
-		return re.sub(r"  (.*)", r"\1", out)
+		return re.sub(r"  (.*)", r"\1", out).rstrip()
 
 class UxsdSimple(UxsdType):
 	pass
@@ -140,8 +138,6 @@ class UxsdComplex(UxsdType, UxsdSourcable):
 	def cpp(self) -> str:
 		return "t_%s" % self.name
 
-UxsdAny = Union[UxsdType, UxsdContentType, UxsdElement, UxsdAttribute]
-
 class UxsdSchema:
 	"""A XSD schema tree derived from xmlschema's tree.
 
@@ -149,9 +145,11 @@ class UxsdSchema:
 	access to children and attributes, C++ type names of complex types etc.
 	This tree assumes it's immutable!
 	"""
-	# All user-defined complex types and root elements.
+	# All user-defined complex types, simple types and root elements.
 	complex_types: List[UxsdComplex] = []
-	root_elements: List[UxsdElement] = []
+	root_element: UxsdElement
+	elements: List[UxsdElement] = []
+	simple_types: List[UxsdSimple] = []
 
 	# Complex types found inside elements. They are not found in the global map,
 	# so we have to reserve them while traversing types in the global map
@@ -166,14 +164,6 @@ class UxsdSchema:
 	# We generate a special "type_tag" enum from this.
 	simple_types_in_unions: List[UxsdSimple] = []
 
-	# In C++ code, we allocate global pools for types
-	# which may occur more than once, so that we can avoid
-	# frequent allocations.
-	pool_types: List[UxsdType] = []
-
-	# A special pool is generated for strings.
-	has_string: bool = False
-
 	# Build a UxsdSchema out of an XsdSchema using a recursive walk.
 	# We cache the results in a functools.lru_cache of unbounded size to
 	# guarantee that an Xsd* object will always give the same Uxsd* object
@@ -182,7 +172,7 @@ class UxsdSchema:
 	def visit_group(self, t: XsdGroup, many=False, optional=False) -> List[UxsdElement]:
 		out: List[UxsdElement] = []
 		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] is 0: optional = True
+		if t.occurs[0] == 0: optional = True
 		if not many and t.model == "choice": optional = True
 		for e in t._group:
 			if isinstance(e, XsdGroup):
@@ -196,7 +186,7 @@ class UxsdSchema:
 	@lru_cache(maxsize=None)
 	def visit_element(self, t: XsdElement, many=False, optional=False) -> UxsdElement:
 		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] is 0: optional = True
+		if t.occurs[0] == 0: optional = True
 
 		type: UxsdType
 		if isinstance(t.type, XsdComplexType):
@@ -205,10 +195,10 @@ class UxsdSchema:
 			type = self.visit_simple_type(t.type)
 
 		name = t.name
-		if many:
-			self.pool_types.append(type)
 		xml_elem = t.schema_elem
-		return UxsdElement(name, many, optional, type, xml_elem)
+		out = UxsdElement(name, many, optional, type, xml_elem)
+		self.elements.append(out)
+		return out
 
 	# Only enumerations are supported.
 	@lru_cache(maxsize=None)
@@ -239,27 +229,28 @@ class UxsdSchema:
 
 	@lru_cache(maxsize=None)
 	def visit_simple_type(self, t: XsdSimpleType) -> UxsdSimple:
+		out: UxsdSimple
 		# Remove w3.org namespace from built-in type names.
 		if "w3.org" in t.name:
 			name = t.name.split("}")[1]
 		if isinstance(t, XsdAtomicBuiltin):
-			if name == "string":
-				self.has_string = True
-				return UxsdString()
+			if name in ["string", "IDREF", "ID", "NCName"]:
+				out = UxsdString()
 			else:
-				return UxsdNumber(name)
+				out = UxsdNumber(name)
 		elif isinstance(t, XsdList):
 			# Just read xs:lists into a string for now.
 			# That simplifies validation and keeps heap allocation to nodes only.
 			# VPR just reads list types into a string, too.
-			self.has_string = True
-			return UxsdString()
+			out = UxsdString()
 		elif isinstance(t, XsdAtomicRestriction):
-			return self.visit_restriction(t)
+			out = self.visit_restriction(t)
 		elif isinstance(t, XsdUnion):
-			return self.visit_union(t)
+			out = self.visit_union(t)
 		else:
 			raise NotImplementedError("Unknown XsdSimpleType %s." % t)
+		self.simple_types.append(out)
+		return out
 
 	@lru_cache(maxsize=None)
 	def visit_attribute(self, a: XsdAttribute) -> UxsdAttribute:
@@ -303,26 +294,24 @@ class UxsdSchema:
 
 		xml_elem = t.schema_elem
 		out = UxsdComplex(name, attrs, content, xml_elem)
-		if t.name is None:
-			self.anonymous_complex_types.append(out)
+		self.complex_types.append(out)
 		return out
 
 	def __init__(self, parent: XMLSchema10) -> None:
-		for k, v in parent.types.items():
-			if "w3.org" not in k and isinstance(v, XsdComplexType):
-				self.complex_types.append(self.visit_complex_type(v))
-		for v in parent.elements.values():
-			self.root_elements.append(self.visit_element(v))
+		if not len(parent.elements) == 1:
+			raise NotImplementedError("Only one root element is supported.")
+		self.root_element = self.visit_element(*parent.elements.values())
 
 		# The visit* functions have side effects, they update schema-wide lists.
 		# Remove duplicates from schema-wide lists while preserving order.
 		self.enums = list(dict.fromkeys(self.enums))
 		self.unions = list(dict.fromkeys(self.unions))
+		self.simple_types = list(dict.fromkeys(self.simple_types))
 		self.simple_types_in_unions = list(dict.fromkeys(self.simple_types_in_unions))
-		self.pool_types = list(dict.fromkeys(self.pool_types))
+		self.elements = list(dict.fromkeys(self.elements))
 
 		# Collect complex types and sort by tree height.
-		def key_type(x: UxsdType, visited=None) -> int:
+		def _key_type(x: UxsdType, visited=None) -> int:
 			if not visited: visited=set()
 			if x in visited: return 0
 			else: visited.add(x)
@@ -330,16 +319,15 @@ class UxsdSchema:
 				tree_heights: List[int] = []
 				for child in x.content.children:
 					if isinstance(child.type, UxsdComplex):
-						tree_heights.append(key_type(x, visited))
+						tree_heights.append(_key_type(x, visited))
 					else:
 						tree_heights.append(1)
 				return max(tree_heights) + 1
 			else:
 				return 1
 
-		self.complex_types += self.anonymous_complex_types
-		self.complex_types.sort(key=key_type)
-		self.pool_types.sort(key=key_type)
+		self.complex_types.sort(key=_key_type)
+		self.elements.sort(key=lambda x: _key_type(x.type))
 
 	@property
 	def has_dfa(self) -> bool:

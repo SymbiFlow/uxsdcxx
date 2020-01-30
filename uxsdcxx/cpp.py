@@ -1,122 +1,160 @@
-from typing import List, Tuple, Dict, Set, Union, Optional
+from typing import Union, List
 
-from uxsdcxx import cpp_templates, utils, __version__
-from uxsdcxx.third_party import triehash
-from uxsdcxx.schema import (
+from . import cpp_templates, utils
+from .utils import checked
+from .version import __version__
+from .third_party import triehash
+from .schema import (
 	UxsdSchema,
-	UxsdUnion,
 	UxsdComplex,
 	UxsdDfa,
 	UxsdAll,
 	UxsdLeaf,
 	UxsdElement,
-	UxsdType,
 	UxsdEnum,
 	UxsdSimple,
+	UxsdString,
 	UxsdAtomic,
 	UxsdAttribute,
 )
 
-def typedefn_from_union(t: UxsdUnion) -> str:
-	"""Generate a C++ definition of a type-tagged union.
+def pass_at_init(attr: UxsdAttribute):
+	if attr.optional:
+		return False
 
-	Example:
-	/**
-	 * Generated from:
-	 * <xs:union... />
-	*/
-	struct union_foo {
-		type_tag tag;
-		union {
-			double as_double;
-			int as_int;
-		}
-	}
-	type_tag is a special enum which is generated from the sum of the
-	simple types seen so far in unions.
-	"""
-	out = ""
-	out += "/** Generated from:\n"
-	out += utils.to_comment_body(t.source)
-	out += "\n*/\n"
-	out += "struct %s {\n" % t.cpp
-	out += "\ttype_tag tag;\n"
-	out += "\tunion {\n"
-	for e in t.member_types:
-		field_name = utils.to_union_field_name(e.cpp)
-		out += "\t\t%s %s;\n" % (e.cpp, field_name)
-	out += "\t};\n"
-	out += "};\n"
-	return out
+	if attr.type.cpp == "const char *":
+		return False
 
-def typedefn_from_complex_type(t: UxsdComplex) -> str:
-	"""Generate a C++ struct definition corresponding to a UxsdComplex.
+	return True
 
-	Example:
-	/**
-	 * Generated from:
-	 * <xs:complexType... />
-	*/
-	struct t_foo {
-		int bar;
-		bool has_my_baz;
-		t_baz my_baz;
-		collapsed_vec<t_quux, quux_pool> my_quuxes;
-	}
-	"""
+def _gen_attribute_arg(e: Union[UxsdElement, UxsdAttribute], out:bool=False) -> str:
+	if out:
+		return "%s * %s" % (e.type.cpp, checked(e.name))
+	else:
+		return "%s %s" % (e.type.cpp, checked(e.name))
+
+def _gen_required_attribute_arg_list(context_type: str, attrs: List[UxsdAttribute], out:bool=False, context:str = "ctx") -> str:
+	args = []
+	if not out:
+		args.append("{} &{}".format(context_type, context))
+
+	for attr in sorted(attrs, key=lambda attr: attr.name):
+		if pass_at_init(attr):
+			args.append(_gen_attribute_arg(attr, out=out))
+
+	return ', '.join(args)
+
+
+def _gen_context_type(t: UxsdComplex, direction : str) -> str:
+	return "typename ContextTypes::{}{}Context".format(utils.to_pascalcase(t.name), direction)
+
+
+def _gen_virtual_fns(t: UxsdComplex) -> str:
+	"""Generate virtual functions to interface with an element with a complex type."""
 	fields = []
+	def _add_field(ret: str, verb: str, what: str, args: str):
+		fields.append("virtual inline %s %s_%s_%s(%s) = 0;" % (ret, verb, t.name, what, args))
+
+	def _add_set(e: Union[UxsdElement, UxsdAttribute]):
+		_add_field("void", "set", e.name, "{}, {} &ctx".format(_gen_attribute_arg(e), _gen_context_type(t, "Write")))
+	def _add_init(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
+		_add_field(_gen_context_type(e.type, "Write"), "init", e.name, _gen_required_attribute_arg_list(_gen_context_type(t, "Write"), e.type.attrs))
+		_add_field("void", "finish", e.name, _gen_context_type(e.type, "Write") + " &ctx")
+	def _add_add_simple(e: UxsdElement):
+		_add_field("void", "add", e.name, "{} {}, {} &ctx" % (e.type.cpp, checked(e.name), _gen_context_type(t, "Write")))
+	def _add_add_complex(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
+		_add_field("void", "preallocate", e.name, _gen_context_type(t, "Write") + " &ctx, size_t size")
+		_add_field(_gen_context_type(e.type, "Write"), "add", e.name, _gen_required_attribute_arg_list(_gen_context_type(t, "Write"), e.type.attrs))
+		_add_field("void", "finish", e.name, _gen_context_type(e.type, "Write") + " &ctx")
+	def _add_add(e: UxsdElement):
+		if isinstance(e.type, UxsdSimple): _add_add_simple(e)
+		elif isinstance(e.type, UxsdComplex): _add_add_complex(e)
+		else: raise TypeError(e)
+
+	def _add_get_simple(e: Union[UxsdElement, UxsdAttribute]):
+		_add_field(e.type.cpp, "get", e.name, _gen_context_type(t, "Read") + " &ctx")
+	def _add_get_simple_many(e: UxsdElement):
+		_add_field(e.type.cpp, "get", e.name, _gen_context_type(t, "Read") + " &ctx")
+	def _add_get_complex(e: UxsdElement):
+		_add_field(_gen_context_type(e.type, "Read"), "get", e.name, _gen_context_type(t, "Read") + " &ctx")
+	def _add_get_complex_many(e: UxsdElement):
+		_add_field(_gen_context_type(e.type, "Read"), "get", e.name, "int n, {}".format(_gen_context_type(t, "Read") + " &ctx"))
+	def _add_num(e: UxsdElement):
+		_add_field("size_t", "num", e.name, _gen_context_type(t, "Read") + " &ctx")
+	def _add_has(e: UxsdElement):
+		_add_field("bool", "has", e.name, _gen_context_type(t, "Read") + " &ctx")
+
 	for attr in t.attrs:
-		fields.append("%s %s;" % (attr.type.cpp, utils.checked(attr.name)))
+		_add_get_simple(attr)
+		if not pass_at_init(attr):
+			_add_set(attr)
+
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		for el in t.content.children:
-			if el.many:
-				fields.append("collapsed_vec<%s, %s_pool> %s;" % (el.type.cpp, el.type.name, utils.pluralize(el.name)))
-			elif el.optional:
-				fields.append("bool has_%s;" % el.name)
-				fields.append("%s %s;" % (el.type.cpp, utils.checked(el.name)))
+		for e in t.content.children:
+			if isinstance(e.type, UxsdComplex):
+				if e.many:
+					_add_add_complex(e)
+					_add_num(e)
+					_add_get_complex_many(e)
+				else:
+					_add_init(e)
+					_add_get_complex(e)
+					if e.optional: _add_has(e)
+			elif isinstance(e.type, UxsdSimple):
+				if e.many:
+					_add_add_simple(e)
+					_add_num(e)
+					_add_get_simple_many(e)
+				else:
+					_add_set(e)
+					_add_get_simple(e)
 			else:
-				fields.append("%s %s;" % (el.type.cpp, utils.checked(el.name)))
+				raise TypeError(e)
 	elif isinstance(t.content, UxsdLeaf):
-		fields.append("%s value;" % t.content.type.cpp)
+		_add_field("void", "set", "value", "{} value, {} &ctx".format(t.content.type.cpp, _gen_context_type(t, "Write")))
+		_add_field(t.content.type.cpp, "get", "value", _gen_context_type(t, "Read") + " &ctx")
 
 	out = ""
-	out += "/** Generated from:\n"
+	out += "/** Generated for complex type \"%s\":\n" % t.name
 	out += utils.to_comment_body(t.source)
 	out += "\n*/\n"
-	out += "struct %s {\n" % t.cpp
-	out += utils.indent("\n".join(fields))
-	out += "\n};"
+	out += "\n".join(fields)
 	return out
 
-def typedefn_from_root_element(el: UxsdElement) -> str:
-	"""Generate a C++ class declaration of a root element,
-	which inherits its content type and adds load and write functions.
-	"""
+def gen_base_class(schema: UxsdSchema) -> str:
+	"""Generate a C++ base class of a root element."""
 	out = ""
-	out += "/** Generated from:\n"
-	out += utils.to_comment_body(el.source)
-	out += "\n*/\n"
-	out += "class %s : public %s {\n" % (el.name, el.type.cpp)
+	root = schema.root_element
+	class_name = utils.to_pascalcase(root.name)
+	out += "struct Default{pname}ContextTypes {{\n".format(pname=class_name)
+	out += "\n\t".join("using {}ReadContext = void *;".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
+	out += "\n"
+	out += "\n\t".join("using {}WriteContext = void *;".format(utils.to_pascalcase(x.name)) for x in schema.complex_types)
+	out += "\n};\n"
+	out += "\n"
+	out += "template<typename ContextTypes=Default{pname}ContextTypes>\n".format(pname=class_name)
+	out += "class %sBase {\n" % class_name
 	out += "public:\n"
-	out += "\tpugi::xml_parse_result load(std::istream &is);\n"
-	out += "\tvoid write(std::ostream &os);\n"
-	out += "};\n"
-	return out
+	out += "\tvirtual ~%sBase() {}\n" % class_name
 
-#
+	out += "\tvirtual void start_load(const std::function<void(const char*)> *report_error) = 0;\n"
+	out += "\tvirtual void finish_load() = 0;\n"
+	out += "\tvirtual void start_write() = 0;\n"
+	out += "\tvirtual void finish_write() = 0;\n"
+	out += "\tvirtual void error_encountered(const char * file, int line, const char *message) = 0;\n"
 
-def gen_clear_pools(ts: List[UxsdType]) -> str:
-	out = "void clear_pools(void){\n"
-	for t in ts:
-		out += "\t%s_pool.clear();\n" % t.name
-	out += "}"
+	virtual_fns = [_gen_virtual_fns(x) for x in schema.complex_types]
+	out += utils.indent("\n\n".join(virtual_fns))
+	out += "\n};\n"
 	return out
 
 #
 
 def tokens_from_enum(t: UxsdEnum) -> str:
 	"""Generate C++ enum of token values from an UxsdEnum"""
-	out = ""
+	out = "\n"
 	enum_tokens = ["UXSD_INVALID = 0"]
 	enum_tokens += [utils.to_token(x) for x in t.enumeration]
 	out += "enum class %s {%s};" % (t.cpp, ", ".join(enum_tokens))
@@ -127,7 +165,7 @@ def lookup_from_enum(t: UxsdEnum) -> str:
 	out = ""
 	lookup_tokens = ["\"UXSD_INVALID\""]
 	lookup_tokens += ["\"%s\"" % x for x in t.enumeration]
-	out += "const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
+	out += "constexpr const char *lookup_%s[] = {%s};" % (t.name, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_enum(t: UxsdEnum) -> str:
@@ -142,11 +180,11 @@ def lexer_from_enum(t: UxsdEnum) -> str:
 	to throw otherwise.
 	"""
 	out = ""
-	out += "inline %s lex_%s(const char *in, bool throw_on_invalid){\n" % (t.cpp, t.cpp)
+	out += "inline %s lex_%s(const char *in, bool throw_on_invalid, const std::function<void(const char *)> * report_error){\n" % (t.cpp, t.cpp)
 	triehash_alph = [(x, "%s::%s" % (t.cpp, utils.to_token(x))) for x in t.enumeration]
 	out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 	out += "\tif(throw_on_invalid)\n"
-	out += "\t\tthrow std::runtime_error(\"Found unrecognized enum value \" + std::string(in) + \" of %s.\");\n" % t.cpp
+	out += "\t\t(*report_error)((\"Found unrecognized enum value \" + std::string(in) + \" of %s.\").c_str());\n" % t.cpp
 	out += "\treturn %s::UXSD_INVALID;\n" % t.cpp
 	out += "}\n"
 	return out
@@ -160,12 +198,12 @@ def tokens_from_complex_type(t: UxsdComplex) -> str:
 		enum_tokens = [utils.to_token(e.name) for e in t.content.children]
 		lookup_tokens = ["\"%s\"" % e.name for e in t.content.children]
 		out += "enum class gtok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
+		out += "constexpr const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
 	if t.attrs:
 		enum_tokens = [utils.to_token(x.name) for x in t.attrs]
 		lookup_tokens = ["\"%s\"" % x.name for x in t.attrs]
-		out += "enum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
+		out += "\nenum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
+		out += "constexpr const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
 	return out
 
 def lexer_from_complex_type(t: UxsdComplex) -> str:
@@ -178,16 +216,18 @@ def lexer_from_complex_type(t: UxsdComplex) -> str:
 	"""
 	out = ""
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		out += "inline gtok_%s lex_node_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline gtok_%s lex_node_%s(const char *in, const std::function<void(const char *)> *report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(e.name, "gtok_%s::%s" % (t.cpp, utils.to_token(e.name))) for e in t.content.children]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\tthrow std::runtime_error(\"Found unrecognized child \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "\t(*report_error)((\"Found unrecognized child \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
+		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
 		out += "}\n"
 	if t.attrs:
-		out += "inline atok_%s lex_attr_%s(const char *in){\n" % (t.cpp, t.cpp)
+		out += "inline atok_%s lex_attr_%s(const char *in, const std::function<void(const char *)> * report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(x.name, "atok_%s::%s" % (t.cpp, utils.to_token(x.name))) for x in t.attrs]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\tthrow std::runtime_error(\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\");\n" % t.name
+		out += "\t(*report_error)((\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
+		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
 		out += "}\n"
 	return out
 
@@ -202,9 +242,9 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	assert isinstance(t.content, UxsdDfa)
 	dfa = t.content.dfa
 	out = ""
-	out += "static const int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
-	out += "static const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
-	out += "int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
+	out += "constexpr int NUM_%s_STATES = %d;\n" % (t.cpp.upper(), len(dfa.states))
+	out += "constexpr const int NUM_%s_INPUTS = %d;\n" % (t.cpp.upper(), len(dfa.alphabet))
+	out += "constexpr int gstate_%s[NUM_%s_STATES][NUM_%s_INPUTS] = {\n" % (t.cpp, t.cpp.upper(), t.cpp.upper())
 	for i in range(0, max(dfa.states)+1):
 		state = dfa.transitions[i]
 		row = [str(state[x]) if state.get(x) is not None else "-1" for x in dfa.alphabet]
@@ -212,66 +252,51 @@ def _gen_dfa_table(t: UxsdComplex) -> str:
 	out += "};\n"
 	return out
 
-# TODO: Find a cleaner way to load unions.
-def _gen_load_union(t: UxsdUnion, container: str, input: str) -> str:
-	out = ""
-	for m in t.member_types:
-		new_container = "%s.%s" % (container, utils.to_union_field_name(m.cpp))
-		out += "%s.tag = type_tag::%s;\n" % (container, utils.to_token(m.cpp))
-		if isinstance(m, UxsdAtomic):
-			out += "%s = %s;\n" % (new_container, (m.cpp_load_format % input))
-			out += "if(errno == 0)\n"
-			out += "\tbreak;\n"
-		elif isinstance(m, UxsdEnum):
-			out += "%s = lex_%s(%s, false);\n" % (new_container, m.cpp, input)
-			out += "if(%s != %s::UXSD_INVALID)\n" % (new_container, m.cpp)
-			out += "break;\n"
-		else:
-			raise NotImplementedError("I don't know how to load %s into a union." % m)
-	out += "throw std::runtime_error(\"Couldn't load a suitable value into union %s.\");\n" % t.name
-	return out
+def _gen_stub_suffix(t: Union[UxsdElement, UxsdAttribute], parent: str) -> str:
+	return "%s_%s" % (parent, t.name)
 
-# See https://stackoverflow.com/questions/26080829/detecting-strtol-failure
-# Since detecting additional characters require some other hoops which would
-# hurt performance, we only check errno.
-def _gen_load_simple(t: UxsdSimple, container: str, input: str) -> str:
-	out = ""
-	if isinstance(t, UxsdAtomic):
-		out += "%s = %s;\n" % (container, (t.cpp_load_format % input))
-		out += "if(errno != 0)\n"
-		out += "\tthrow std::runtime_error(\"Invalid value `\" + std::string(%s) + \"` to load a %s into %s.\");\n" % (input, t.cpp, container)
+def _gen_load_simple(t: UxsdSimple, input: str) -> str:
+	if isinstance(t, UxsdString):
+		return input
 	elif isinstance(t, UxsdEnum):
-		out += "%s = lex_%s(%s, true);\n" % (container, t.cpp, input)
-	elif isinstance(t, UxsdUnion):
-		out += _gen_load_union(t, container, input)
+		return "lex_%s(%s, true, report_error)" % (t.cpp, input)
 	else:
-		raise TypeError("Unknown simple type %s." % t)
-	return out
+		return "load_%s(%s, report_error)" % (utils.to_snakecase(t.cpp), input)
 
 def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdComplex)
-	out = ""
+	out = "{\n"
+
+	args = ["context"]
+	load_args = []
+
+	for attr in t.type.attrs:
+		if not pass_at_init(attr):
+			continue
+
+		arg = "%s_%s" % (t.type.name, checked(attr.name))
+		out += "\t%s %s;\n" % (attr.type.cpp, arg)
+		args.append(arg)
+		load_args.append('&' + arg)
+
+	if len(load_args) > 0:
+		out += "\tload_%s_required_attributes(node, %s, report_error);\n" % (t.type.name, ', '.join(load_args))
 	if t.many:
-		out += "%s->%s.push_back(%s());\n" % (parent, utils.pluralize(t.name), t.type.cpp)
-		out += "load_%s(node, &%s->%s.back());\n" % (t.type.name, parent, utils.pluralize(t.name))
+		out += "\tauto child_context = out.add_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
 	else:
-		out += "load_%s(node, &%s->%s);\n" % (t.type.name, parent, t.name)
-		if t.optional:
-			out += "%s->has_%s = 1;\n" % (parent, t.name)
+		out += "\tauto child_context = out.init_%s(%s);\n" % (_gen_stub_suffix(t, parent), ', '.join(args))
+	out += "\tload_%s(node, out, child_context, report_error, offset_debug);\n" % t.type.name
+	out += "\tout.finish_%s(child_context);\n" % _gen_stub_suffix(t, parent)
+	out += "}\n"
 	return out
 
 def _gen_load_element_simple(t: UxsdElement, parent: str) -> str:
 	assert isinstance(t.type, UxsdSimple)
 	out = ""
 	if t.many:
-		container = "%s->%s" % (parent, utils.pluralize(t.name))
-		out += "%s.push_back(0);\n" % container
-		out += _gen_load_simple(t.type, "%s.back()" % container, "node.child_value()")
+		out += "out.add_%s(%s, context);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
 	else:
-		container = "%s->%s" % (parent, utils.checked(t.name))
-		out += _gen_load_simple(t.type, container, "node.child_value()")
-		if t.optional:
-			out += "%s->has_%s = 1;\n" % (parent, t.name)
+		out += "out.set_%s(%s, context);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "node.child_value()"))
 	return out
 
 def _gen_load_element(t: UxsdElement, parent: str) -> str:
@@ -279,6 +304,12 @@ def _gen_load_element(t: UxsdElement, parent: str) -> str:
 		return _gen_load_element_complex(t, parent)
 	else:
 		return _gen_load_element_simple(t, parent)
+
+def _gen_load_attr(t: UxsdAttribute, parent: str) -> str:
+	if not pass_at_init(t):
+		return "out.set_%s(%s, context);\n" % (_gen_stub_suffix(t, parent), _gen_load_simple(t.type, "attr.value()"))
+	else:
+		return "/* Attribute %s is already set */\n" % t.name
 
 def _gen_load_dfa(t: UxsdComplex) -> str:
 	"""Partial function to generate the child element validation&loading portion
@@ -294,28 +325,69 @@ def _gen_load_dfa(t: UxsdComplex) -> str:
 	"""
 	assert isinstance(t.content, UxsdDfa)
 	dfa = t.content.dfa
+
+	any_many = False
 	out = ""
+	for el in t.content.children:
+		if el.many:
+			if not any_many:
+				out += "// Preallocate arrays by counting child nodes (if any)\n"
+			out += "size_t {tag}_count = 0;\n".format(tag=el.name)
+			any_many = True
+
+	if any_many:
+		out += "{\n"
+		out += "\tint next, state=%d;\n" % dfa.start
+		out += "\tfor(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {\n"
+		out += "\t\t*offset_debug = node.offset_debug();\n"
+		out += "\t\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
+
+		out += "\t\tnext = gstate_%s[state][(int)in];\n" % t.cpp
+		out += "\t\tif(next == -1)\n"
+		out += "\t\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d, report_error);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
+		out += "\t\tstate = next;\n"
+
+		out += "\t\tswitch(in) {\n";
+		for el in t.content.children:
+			out += "\t\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
+			if el.many:
+				out += "\t\t\t{tag}_count += 1;\n".format(tag=el.name)
+			out += "\t\t\tbreak;\n"
+		out += "\t\tdefault: break; /* Not possible. */\n"
+		out += "\t\t}\n"
+		out += "\t}\n"
+		out += "\t\n"
+
+		for el in t.content.children:
+			if el.many:
+				out += "\tout.preallocate_{stub}(context, {tag}_count);\n".format(
+						stub=_gen_stub_suffix(el, t.name),
+						tag=el.name
+						)
+
+		out += "}\n"
+
 	out += "int next, state=%d;\n" % dfa.start
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\t*offset_debug = node.offset_debug();\n"
+	out += "\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tnext = gstate_%s[state][(int)in];\n" % t.cpp
 	out += "\tif(next == -1)\n"
-	out += "\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d);\n"\
-					% (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
+	out += "\t\tdfa_error(gtok_lookup_%s[(int)in], gstate_%s[state], gtok_lookup_%s, %d, report_error);\n" % (t.cpp, t.cpp, t.cpp, len(dfa.alphabet))
 	out += "\tstate = next;\n"
 
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
 		out += "\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
-		out += utils.indent(_gen_load_element(el, "out"), 2)
+		out += utils.indent(_gen_load_element(el, t.name), 2)
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
 
 	reject_cond = " && ".join(["state != %d" % x for x in dfa.accepts])
 	out += "}\n"
-	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d);\n"\
+	out += "if(%s) dfa_error(\"end of input\", gstate_%s[state], gtok_lookup_%s, %d, report_error);\n"\
 			% (reject_cond, t.cpp, t.cpp, len(dfa.alphabet))
 
 	return out
@@ -335,15 +407,16 @@ def _gen_load_all(t: UxsdComplex) -> str:
 
 	out += "std::bitset<%d> gstate = 0;\n" % N
 	out += "for(pugi::xml_node node = root.first_child(); node; node = node.next_sibling()){\n"
-	out += "\tgtok_%s in = lex_node_%s(node.name());\n" % (t.cpp, t.cpp)
+	out += "\t*offset_debug = node.offset_debug();\n"
+	out += "\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
-	out += "\telse throw std::runtime_error(\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\");\n" % t.name
+	out += "\telse (*report_error)((\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
 		out += "\tcase gtok_%s::%s:\n" % (t.cpp, utils.to_token(el.name))
-		out += utils.indent(_gen_load_element(el, "out"), 2)
+		out += utils.indent(_gen_load_element(el, t.name), 2)
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
@@ -351,27 +424,31 @@ def _gen_load_all(t: UxsdComplex) -> str:
 
 	mask = "".join(["1" if x.optional else "0" for x in t.content.children][::-1])
 	out += "std::bitset<%d> test_gstate = gstate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_gstate.all()) all_error(test_gstate, gtok_lookup_%s);\n" % t.cpp
+	out += "if(!test_gstate.all()) all_error(test_gstate, gtok_lookup_%s, report_error);\n" % t.cpp
 
 	return out
 
-def _gen_load_attrs(t: UxsdComplex) -> str:
+def _gen_load_required_attrs(t: UxsdComplex) -> str:
 	"""Partial function to generate the attribute loading portion of a C++
 	function load_foo. See _gen_load_all to see how attributes are validated.
 	"""
+
 	assert len(t.attrs) > 0
 	N = len(t.attrs)
 	out = ""
 	out += "std::bitset<%d> astate = 0;\n" % N
 	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
-	out += "\tatok_%s in = lex_attr_%s(attr.name());\n" % (t.cpp, t.cpp)
+	out += "\tatok_%s in = lex_attr_%s(attr.name(), report_error);\n" % (t.cpp, t.cpp)
 	out += "\tif(astate[(int)in] == 0) astate[(int)in] = 1;\n"
-	out += "\telse throw std::runtime_error(\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\");\n" % t.name
+	out += "\telse (*report_error)((\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for attr in t.attrs:
 		out += "\tcase atok_%s::%s:\n" % (t.cpp, utils.to_token(attr.name))
-		out += utils.indent(_gen_load_simple(attr.type, "out->%s" % utils.checked(attr.name), "attr.value()"), 2)
+		if pass_at_init(attr):
+			out += "\t\t*%s = %s;\n" % (checked(attr.name), _gen_load_simple(attr.type, "attr.value()"))
+		else:
+			out += "\t\t/* Attribute %s set after element init */\n" % attr.name
 		out += "\t\tbreak;\n"
 	out += "\tdefault: break; /* Not possible. */\n"
 	out += "\t}\n";
@@ -379,134 +456,235 @@ def _gen_load_attrs(t: UxsdComplex) -> str:
 
 	mask = "".join(["1" if x.optional else "0" for x in t.attrs][::-1])
 	out += "std::bitset<%d> test_astate = astate | std::bitset<%d>(0b%s);\n" % (N, N, mask)
-	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_%s);\n" % t.cpp
+	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_%s, report_error);\n" % t.cpp
+	return out
+
+
+def _gen_load_attrs(t: UxsdComplex) -> str:
+	"""Partial function to generate the attribute loading portion of a C++
+	function load_foo. See _gen_load_all to see how attributes are validated.
+	"""
+
+	count = 0
+	for attr in t.attrs:
+		if not pass_at_init(attr):
+			count += 1
+
+	if count == 0:
+		# All attributes already handled.
+		return ""
+
+	assert len(t.attrs) > 0
+	out = ""
+	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
+	out += "\tatok_%s in = lex_attr_%s(attr.name(), report_error);\n" % (t.cpp, t.cpp)
+
+	out += "\tswitch(in){\n";
+	for attr in t.attrs:
+		out += "\tcase atok_%s::%s:\n" % (t.cpp, utils.to_token(attr.name))
+		out += utils.indent(_gen_load_attr(attr, t.name), 2)
+		out += "\t\tbreak;\n"
+	out += "\tdefault: break; /* Not possible. */\n"
+	out += "\t}\n";
+	out += "}\n"
+
+	return out
+
+def load_required_attrs_fn_from_complex_type(t: UxsdComplex) -> str:
+	"""Generate a full C++ function load_foo(&root, &out)
+	which can load an XSD complex type from DOM &root into C++ object out.
+	"""
+	out = ""
+	out += "inline void load_%s_required_attributes(const pugi::xml_node &root, %s, const std::function<void(const char *)> * report_error){\n" % (
+			t.name, _gen_required_attribute_arg_list("", t.attrs, out=True))
+
+	out += utils.indent(_gen_load_required_attrs(t))
+
+	out += "}\n"
 	return out
 
 def load_fn_from_complex_type(t: UxsdComplex) -> str:
-	"""Generate a full C++ function load_foo(&root, *out)
-	which can load an XSD complex type from DOM &root into C++ type *out.
+	"""Generate a full C++ function load_foo(&root, &out)
+	which can load an XSD complex type from DOM &root into C++ object out.
 	"""
 	out = ""
+	out += "template<class T, typename Context>\n"
+	out += "inline void load_%s(const pugi::xml_node &root, T &out, Context &context, const std::function<void(const char*)> *report_error, ptrdiff_t *offset_debug){\n" % t.name
 
-	out += "void load_%s(const pugi::xml_node &root, %s *out){\n" % (t.name, t.cpp)
+	out += "\t(void)root;\n"
+	out += "\t(void)out;\n"
+	out += "\t(void)context;\n"
+	out += "\t(void)report_error;\n"
+	out += "\t// Update current file offset in case an error is encountered.\n"
+	out += "\t*offset_debug = root.offset_debug();\n"
+	out += "\n"
+	if t.attrs:
+		out += utils.indent(_gen_load_attrs(t))
+	else:
+		out += "\tif(root.first_attribute())\n"
+		out += "\t\t(*report_error)(\"Unexpected attribute in <%s>.\");\n" % t.name
+	out += "\n"
+
 	if isinstance(t.content, UxsdDfa):
 		out = _gen_dfa_table(t) + out
 		out += utils.indent(_gen_load_dfa(t))
 	elif isinstance(t.content, UxsdAll):
 		out += utils.indent(_gen_load_all(t))
 	elif isinstance(t.content, UxsdLeaf):
-		out += utils.indent(_gen_load_simple(t.content.type, "out->value", "root.child_value()"))
-	else:
+		out += "\tout.set_%s_value(%s, context);\n" % (t.name, _gen_load_simple(t.content.type, "root.child_value()"))
+
+	if not isinstance(t.content, (UxsdDfa, UxsdAll)):
 		out += "\tif(root.first_child().type() == pugi::node_element)\n"
-		out += "\t\tthrow std::runtime_error(\"Unexpected child element in <%s>.\");\n" % t.name
-
+		out += "\t\t(*report_error)(\"Unexpected child element in <%s>.\");\n" % t.name
 	out += "\n"
-	if t.attrs:
-		out += utils.indent(_gen_load_attrs(t))
-	else:
-		out += "\tif(root.first_attribute())\n"
-		out += "\t\tthrow std::runtime_error(\"Unexpected attribute in <%s>.\");\n" % t.name
 
 	out += "}\n"
 	return out
 
 #
 
-def load_fn_from_element(el: UxsdElement) -> str:
-	out = ""
-	out += "pugi::xml_parse_result %s::load(std::istream &is){\n" % utils.checked(el.name)
-	out += "\tpugi::xml_document doc;\n"
-	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
-	out += "\tif(!result) return result;\n"
-	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
-
-	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % el.name
-	out += "\t\t\t/* If errno is set up to this point, it messes with strtol errno checking. */\n"
-	out += "\t\t\terrno = 0;\n"
-	out += "\t\t\tload_%s(node, this);\n" % el.type.name
-
-	out += "\t\t}\n"
-	out += "\t\telse throw std::runtime_error(\"Invalid root-level element \" + std::string(node.name()));\n"
-	out += "\t}\n"
-	out += "\treturn result;\n"
-	out += "}\n"
-	return out
-
-#
-
-def _gen_write_simple(t: UxsdSimple, container: str, attr_name: str="") -> str:
-	"""Partial function to generate code which writes out a simple type.
-
-	The attr_name parameter is passed by _gen_write_attr so that we can
-	generate squashed code like `os << "index=\"" << y_list.index << "\"";`.
+# See https://stackoverflow.com/questions/26080829/detecting-strtol-failure
+# Since detecting additional characters require some other hoops which would
+# hurt performance, we only check errno.
+def load_fn_from_simple_type(t: UxsdSimple) -> str:
+	"""Generate a full C++ function load_foo(str)
+	which can load an XSD simple type from str and return it.
 	"""
 	out = ""
+	out += "inline %s load_%s(const char *in, const std::function<void(const char *)> * report_error){\n" % (t.cpp, utils.to_snakecase(t.cpp))
+	out += "\t%s out;\n" % t.cpp
 	if isinstance(t, UxsdAtomic):
-		if attr_name:
-			out += "os << \" %s=\\\"\" << %s << \"\\\"\";\n" % (attr_name, container)
-		else:
-			out += "os << %s;\n" % container
+		out += "\tout = %s;\n" % (t.cpp_load_format % "in")
+		out += "\tif(errno != 0)\n"
+		out += "\t\t(*report_error)((\"Invalid value `\" + std::string(in) + \"` when loading into a %s.\").c_str());\n" % t.cpp
 	elif isinstance(t, UxsdEnum):
-		if attr_name:
-			out += "os << \" %s=\\\"\" << lookup_%s[(int)%s] << \"\\\"\";\n" % (attr_name, t.name, container)
+		out += "\tout = lex_%s(in, true);\n" % t.cpp
+	else:
+		raise TypeError("Unsupported simple type %s." % t)
+	out += "\treturn out;\n"
+	out += "}\n"
+	return out
+
+#
+
+def load_fn_from_root_element(e: UxsdElement) -> str:
+	out = ""
+	out += "template <class T, typename Context>\n"
+	out += "inline void load_%s_xml(T &out, Context &context, const char * filename, std::istream &is){\n" % e.name
+	out += "\tpugi::xml_document doc;\n"
+	out += "\tpugi::xml_parse_result result = doc.load(is);\n"
+	out += "\tif(!result) {\n"
+	out += "\t\tint line, col;\n"
+	out += "\t\tget_line_number(filename, result.offset, &line, &col);\n"
+	out += "\t\tstd::stringstream msg;\n"
+	out += "\t\tmsg << \"Unable to load XML file '\" << filename << \"', \";\n"
+	out += "\t\tmsg << result.description() << \" (line: \" << line;\n"
+	out += "\t\tmsg << \" col: \" << col << \")\";"
+	out += "\t\tout.error_encountered(filename, line, msg.str().c_str());\n"
+	out += "\t}\n"
+	out += "\tptrdiff_t offset_debug = 0;\n"
+	out += "\tstd::function<void(const char *)> report_error = [filename, &out, &offset_debug](const char * message) {\n"
+	out += "\t\tint line, col;\n"
+	out += "\t\tget_line_number(filename, offset_debug, &line, &col);\n"
+	out += "\t\tout.error_encountered(filename, line, message);\n"
+	out += "\t\t// If error_encountered didn't throw, throw now to unwind.\n"
+	out += "\t\tthrow std::runtime_error(message);\n"
+	out += "\t};\n"
+	out += "\tout.start_load(&report_error);\n"
+	out += "\t\n"
+
+	out += "\tfor(pugi::xml_node node= doc.first_child(); node; node = node.next_sibling()){\n"
+	out += "\t\tif(std::strcmp(node.name(), \"%s\") == 0){\n" % e.name
+	out += "\t\t\t/* If errno is set up to this point, it messes with strtol errno checking. */\n"
+	out += "\t\t\terrno = 0;\n"
+	out += "\t\t\tload_%s(node, out, context, &report_error, &offset_debug);\n" % e.type.name
+
+	out += "\t\t} else {\n"
+	out += "\t\t\toffset_debug = node.offset_debug();\n"
+	out += "\t\t\treport_error((\"Invalid root-level element \" + std::string(node.name())).c_str());\n"
+	out += "\t\t}\n"
+	out += "\t}\n"
+	out += "\tout.finish_load();\n"
+	out += "}\n"
+	return out
+
+#
+
+def _gen_check_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, context: str = "context") -> str:
+	if isinstance(t, UxsdElement) and t.many:
+		return "in.get_%s(i, %s)" % (_gen_stub_suffix(t, parent), context)
+	else:
+		return "in.get_%s(%s)" % (_gen_stub_suffix(t, parent), context)
+
+def _gen_write_simple(t: Union[UxsdElement, UxsdAttribute], parent: str, context: str = "context") -> str:
+	if isinstance(t.type, UxsdAtomic):
+		if isinstance(t, UxsdElement) and t.many:
+			return "in.get_%s(i, %s)" % (_gen_stub_suffix(t, parent), context)
 		else:
-			out += "os << lookup_%s[(int)%s];\n" % (t.name, container)
-	elif isinstance(t, UxsdUnion):
-		for m in t.member_types:
-			out += "if(%s.tag == type_tag::%s)" % (container, utils.to_token(m.cpp))
-			out += utils.indent(_gen_write_simple(t, container + "." + utils.to_union_field_name(m.cpp), attr_name))
+			return "in.get_%s(%s)" % (_gen_stub_suffix(t, parent), context)
+	elif isinstance(t.type, UxsdEnum):
+		if isinstance(t, UxsdElement) and t.many:
+			return "lookup_%s[(int)in.get_%s(i, %s)]" % (t.type.name, _gen_stub_suffix(t, parent), context)
+		else:
+			return "lookup_%s[(int)in.get_%s(%s)]" % (t.type.name, _gen_stub_suffix(t, parent), context)
 	else:
-		raise NotImplementedError("I don't know how to write out %s." % t)
-	return out
+		raise NotImplementedError(t)
 
-def _gen_write_attr(a: UxsdAttribute, container: str) -> str:
-	"""Partial function to generate code which writes out a single XML attribute."""
+def _gen_write_attr(a: UxsdAttribute, parent: str, context: str = "context") -> str:
+	"""Function to generate partial code which writes out a single XML attribute."""
 	out = ""
-	new_container = "%s.%s" % (container, a.name)
 	if not a.optional or a.default_value:
-		out += _gen_write_simple(a.type, new_container, a.name)
+		out += "os << \" %s=\\\"\" << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
 	else:
-		out += "if((bool)%s)\n" % new_container
-		out += utils.indent(_gen_write_simple(a.type, new_container, a.name))
+		out += "if((bool)%s)\n" % _gen_check_simple(a, parent, context)
+		out += "\tos << \" %s=\\\"\" << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
 	return out
 
-def _gen_write_complex(t: UxsdComplex, name: str, container: str) -> str:
-	"""Partial function to generate code which writes out a simple type."""
+def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
+	"""Function to generate partial code which writes out an element with a complex type."""
+	assert isinstance(e.type, UxsdComplex)
 	out = ""
-	if t.attrs:
-		out += "os << \"<%s\";\n" % name
-		for a in t.attrs:
-			out += _gen_write_attr(a, container)
-	else:
-		out += "os << \"<%s\";\n" % name
 
-	if isinstance(t.content, (UxsdDfa, UxsdAll)):
-		out += "os << \">\";\n"
-		for e in t.content.children:
-			if e.many:
-				out += "for(auto &%s: %s.%s){\n" % (utils.checked(e.name), container, utils.pluralize(e.name))
-				out += utils.indent(_gen_write_element(e, utils.checked(e.name)))
-				out += "}\n"
+	def _gen_write_element_body() -> str:
+		assert isinstance(e.type, UxsdComplex)
+		ouv = ""
+		if e.type.attrs:
+			ouv += "os << \"<%s\";\n" % e.name
+			for a in e.type.attrs:
+				ouv += _gen_write_attr(a, e.type.name, "child_context")
+			if e.type.content:
+				ouv += "os << \">\";\n"
+				ouv += "write_%s(in, os, child_context);\n" % e.type.name
+				ouv += "os << \"</%s>\\n\";\n" % e.name
 			else:
-				new_container = "%s.%s" % (container, utils.checked(e.name))
-				if e.optional:
-					out += "if(%s.has_%s){\n" % (container, e.name)
-					out += utils.indent(_gen_write_element(e, new_container))
-					out += "}\n"
-				else:
-					out += _gen_write_element(e, new_container)
-		out += "os << \"</%s>\";\n" % name
-	elif isinstance(t.content, UxsdLeaf):
-		out += "os << \">\";\n"
-		out += _gen_write_simple(t.content.type, container+".value")
-		out += "os << \"</%s>\";\n" % name
+				ouv += "os << \"/>\\n\";\n"
+		else:
+			if e.type.content:
+				ouv += "os << \"<%s>\\n\";\n" % e.name
+				ouv += "write_%s(in, os, child_context);\n" % e.type.name
+				ouv += "os << \"</%s>\\n\";\n" % e.name
+			else:
+				ouv += "os << \"<%s/>\\n\";\n" % e.name
+		return ouv
+
+	if e.many:
+		out += "for(size_t i=0, n=in.num_%s(context); i<n; i++){\n" % _gen_stub_suffix(e, parent)
+		out += "\tauto child_context = in.get_%s(i, context);\n" % _gen_stub_suffix(e, parent)
+		out += utils.indent(_gen_write_element_body())
+		out += "}\n"
+	elif e.optional:
+		out += "if(in.has_%s(context)){\n" % _gen_stub_suffix(e, parent)
+		out += "\tauto child_context = in.get_%s(context);\n" % _gen_stub_suffix(e, parent)
+		out += utils.indent(_gen_write_element_body())
+		out += "}\n"
 	else:
-		out += "os << \"/>\";\n"
+		out += "auto child_context = in.get_%s(context);\n" % _gen_stub_suffix(e, parent)
+		out += _gen_write_element_body()
+
 	return out
 
-
-def _gen_write_element(el: UxsdElement, container: str) -> str:
-	"""Partial function to generate C++ code for writing out a struct generated
+def _gen_write_element(e: UxsdElement, parent: str) -> str:
+	"""Function to generate partial C++ code for writing out a struct generated
 	from an UxsdElement.
 
 	Currently, all values with non-zero default values are emitted.
@@ -515,26 +693,94 @@ def _gen_write_element(el: UxsdElement, container: str) -> str:
 	unions? strings? doubles?)
 	"""
 	out = ""
-	if isinstance(el.type, UxsdSimple):
-		out += "os << \"<%s>\";\n" % el.name
-		out += _gen_write_simple(el.type, container)
-		out += "os << \"</%s>\";\n" % el.name
-	elif isinstance(el.type, UxsdComplex):
-		out += _gen_write_complex(el.type, el.name, container)
+	if isinstance(e.type, UxsdSimple):
+		if e.many:
+			out += "for(size_t i=0, n=in.num_%s(context); i<n; i++){\n" % _gen_stub_suffix(e, parent)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "}\n"
+		elif e.optional:
+			out += "if((bool)%s)\n" % _gen_write_simple(e, parent)
+			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+		else:
+			out += "os << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+	elif isinstance(e.type, UxsdComplex):
+		out += "{\n"
+		out += utils.indent(_gen_write_complex_element(e, parent))
+		out += "}\n"
 	else:
-		raise TypeError("Unknown type %s." % el.type)
+		raise TypeError("Unknown type %s." % e.type)
 	return out
 
-def write_fn_from_element(t: UxsdElement) -> str:
+
+def write_fn_from_complex_type(t: UxsdComplex) -> str:
+	assert isinstance(t.content, (UxsdDfa, UxsdAll, UxsdLeaf))
 	out = ""
-	out += "void %s::write(std::ostream &os){\n" % utils.checked(t.name)
-	out += utils.indent(_gen_write_element(t, "(*this)"))
+	out += "template<class T, typename Context>\n"
+	out += "inline void write_%s(T &in, std::ostream &os, Context &context){\n" % t.name
+	out += "\t(void)in;\n"
+	out += "\t(void)os;\n"
+	out += "\t(void)context;\n"
+	if isinstance(t.content, (UxsdDfa, UxsdAll)):
+		for e in t.content.children:
+			out += utils.indent(_gen_write_element(e, t.name))
+	elif isinstance(t.content, UxsdLeaf):
+		out += "\tos << in.get_%s_value(context);\n" % t.name
+	else:
+		out += "\treturn;\n"
+
+	out += "}\n"
+	return out
+
+def write_fn_from_root_element(e: UxsdElement) -> str:
+	assert isinstance(e.type, UxsdComplex)
+	out = ""
+	out += "template <class T, typename Context>\n"
+	out += "inline void write_%s_xml(T &in, Context &context, std::ostream &os){\n" % e.name
+	out += "\tin.start_write();\n"
+
+	if e.type.attrs:
+		out += "\tos << \"<%s\";\n" % e.name
+		for a in e.type.attrs:
+			out += utils.indent(_gen_write_attr(a, e.name))
+	else:
+		out += "\tos << \"<%s\";\n" % e.name
+	out += "\tos << \">\\n\";\n"
+	out += "\twrite_%s(in, os, context);\n" % e.type.name
+	out += "\tos << \"</%s>\\n\";\n" % e.name
+	out += "\tin.finish_write();\n"
+
 	out += "}\n"
 	return out
 
 #
 
-def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
+def render_interface_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str:
+	"""Render a C++ header file to a string."""
+	out = ""
+	x = {"version": __version__,
+		"cmdline": cmdline,
+		"input_file": input_file,
+		"md5": utils.md5(input_file)}
+	out += cpp_templates.header_comment.substitute(x)
+	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
+	out += "\n"
+	out += "#include <cstdlib>\n"
+	out += "#include <tuple>\n"
+	out += "\n"
+	out += "namespace uxsd {"
+
+	if schema.enums:
+		out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
+		enum_tokens = [tokens_from_enum(t) for t in schema.enums]
+		out += "\n".join(enum_tokens)
+
+	out += "\n\n/* Base class for the schema. */\n"
+	out += gen_base_class(schema)
+	out += "\n} /* namespace uxsd */\n"
+
+	return out
+
+def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interface_header_file_name: str) -> str:
 	"""Render a C++ header file to a string."""
 	out = ""
 	x = {"version": __version__,
@@ -543,105 +789,40 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str) -> str
 		"md5": utils.md5(input_file)}
 	out += cpp_templates.header_comment.substitute(x)
 	out += cpp_templates.includes
-	out += cpp_templates.collapsed_vec_defn
-	out += cpp_templates.char_pool_defn
+	out += '#include "{}"'.format(interface_header_file_name)
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {"
+	out += "namespace uxsd {\n"
 
-	out += "\n\n/* Forward decl of generated data types. Needed for the pools.\n"
-	out += " * The types are sorted according to tree height, so that the \"root type\"\n"
-	out += " * appears last and we don't get any \"incomplete type\" errors. */\n"
-	struct_decls = ["struct %s;" % t.cpp for t in schema.unions] + ["struct %s;" % t.cpp for t in schema.complex_types]
-	out += "\n".join(struct_decls)
+	out += cpp_templates.get_line_number_decl
 
-	out += "\n\n/* Global shared pools for storing multiply-occurring elements. */\n"
-	extern_pool_decls = []
-	for t in schema.pool_types:
-		extern_pool_decls.append("extern std::vector <%s> %s_pool;" % (t.cpp, t.name))
-	out += "\n".join(extern_pool_decls)
-	out += "\n"
-	if schema.has_string:
-		out += "\nextern char_pool_impl char_pool;\n"
-	out += "\n/* Helper function for freeing the pools. */\n"
-	out += "void clear_pools(void);"
-	if schema.has_string:
-		out += "\n/* One may want to use the allocated strings after loading, so this\n"
-		out += " * function is provided separately. */\n"
-		out += "void clear_strings(void);"
-
-	out += "\n\n/* Enum tokens generated from XSD enumerations. */\n"
-	enum_tokens = [tokens_from_enum(t) for t in schema.enums]
-	out += "\n".join(enum_tokens)
-
-	type_tag_tokens = [utils.to_token(x.cpp) for x in schema.simple_types_in_unions]
-	if type_tag_tokens:
-		out += "\n\n/* Type tag enum for tagged unions. */\n"
-		out += "enum class type_tag {%s};\n" % ", ".join(type_tag_tokens)
-
-	union_defns = [typedefn_from_union(t) for t in schema.unions]
-	if union_defns:
-		out += "\n\n/* Structs generated from  XSD unions. */\n"
-		out += "\n\n".join(union_defns)
-
-	struct_defns = [typedefn_from_complex_type(t) for t in schema.complex_types]
-	out += "\n\n/* Structs generated from complex types. */\n\n"
-	out += "\n\n".join(struct_defns)
-	root_element_decls = [typedefn_from_root_element(el) for el in schema.root_elements]
-	out += "\n\n/* Classes generated from root elements. */\n"
-	out += "\n\n".join(root_element_decls)
-	out += "\n} /* namespace uxsd */\n"
-	return out
-
-def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_file_name: str) -> str:
-	"""Render a C++ implementation file to a string."""
-	out = ""
-	x = {"version": __version__,
-		"cmdline": cmdline,
-		"input_file": input_file,
-		"md5": utils.md5(input_file)}
-	out += cpp_templates.header_comment.substitute(x)
-	out += "#include \"%s\"" % header_file_name
-	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
-	out += "namespace uxsd {\n\n"
-	out += triehash.gen_prelude()
-
-	out += "\n/* Declarations for internal load functions for the root elements. */\n"
+	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []
 	for t in schema.complex_types:
-		load_fn_decls.append("void load_%s(const pugi::xml_node &root, %s *out);" % (t.name, t.cpp))
+		load_fn_decls.append("template <class T, typename Context>")
+		load_fn_decls.append("inline void load_%s(const pugi::xml_node &root, T &out, Context &context, const std::function<void(const char*)> *report_error, ptrdiff_t *offset_debug);" % (t.name))
+		if sum(pass_at_init(attr) for attr in t.attrs) > 0:
+			load_fn_decls.append("inline void load_%s_required_attributes(const pugi::xml_node &root, %s, const std::function<void(const char*)> * report_error);" % (t.name, _gen_required_attribute_arg_list("", t.attrs, out=True)))
 	out += "\n".join(load_fn_decls)
 
-	pool_decls = ["std::vector<%s> %s_pool;" % (t.cpp, t.name) for t in schema.pool_types]
-	if pool_decls:
-		out += "\n"
-		out += "\n".join(pool_decls)
-	if schema.has_string:
-		out += "\nchar_pool_impl char_pool;\n"
-	if pool_decls:
-		out += "\n"
-		out += gen_clear_pools(schema.pool_types)
-	if schema.has_string:
-		out += "\nvoid clear_strings(void){\n"
-		out += "\tchar_pool.clear();\n"
-		out += "}"
+	out += "\n\n/* Declarations for internal write functions for the complex types. */\n"
+	write_fn_decls = []
+	for t in schema.complex_types:
+		if t.content is None:
+			continue
+		write_fn_decls.append("template <class T>")
+		write_fn_decls.append("inline void write_%s(T &in, std::ostream &os, const void *data, void *iter);" % (t.name))
+	out += "\n".join(write_fn_decls)
 
-	if schema.enums:
-		enum_lookups = [lookup_from_enum(t) for t in schema.enums]
-		enum_lexers = [lexer_from_enum(t) for t in schema.enums]
-		out += "\n\n/* Lookup tables for enums. */\n"
-		out += "\n".join(enum_lookups)
-		out += "\n\n/* Lexers(string->token functions) for enums. */\n"
-		out += "\n".join(enum_lexers)
+	out += "\n\n/* Load function for the root element. */\n"
+	out += load_fn_from_root_element(schema.root_element)
+	out += "\n/* Write function for the root element. */\n"
+	out += write_fn_from_root_element(schema.root_element)
 
-	root_load_defns = [load_fn_from_element(el) for el in schema.root_elements]
-	out += "\n\n/* Load functions for the root elements. */\n"
-	out += "\n".join(root_load_defns)
-	root_write_defns = [write_fn_from_element(el) for el in schema.root_elements]
-	out += "\n\n/* Write functions for the root elements. */\n"
-	out += "\n".join(root_write_defns)
+	out += "\n\n"
+	out += triehash.gen_prelude()
 
 	complex_type_tokens = [tokens_from_complex_type(t) for t in schema.complex_types]
-	out += "\n\n/* Tokens for attribute and node names. */\n"
+	out += "\n/* Tokens for attribute and node names. */\n"
 	out += "\n".join(complex_type_tokens)
 	complex_type_lexers = [lexer_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal lexers. These convert the PugiXML node names to input tokens. */\n"
@@ -653,14 +834,51 @@ def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_f
 		out += cpp_templates.all_error_decl
 	if schema.has_attr:
 		out += cpp_templates.attr_error_decl
+
+	if schema.enums:
+		enum_lookups = [lookup_from_enum(t) for t in schema.enums]
+		enum_lexers = [lexer_from_enum(t) for t in schema.enums]
+		out += "\n\n/* Lookup tables for enums. */\n"
+		out += "\n".join(enum_lookups)
+		out += "\n\n/* Lexers(string->token functions) for enums. */\n"
+		out += "\n".join(enum_lexers)
+
+	# No need to generate a loader for const char * or enums.
+	simple_type_loaders = [load_fn_from_simple_type(t) for t in schema.simple_types if not isinstance(t, (UxsdString, UxsdEnum))]
+	complex_type_attr_loaders = [load_required_attrs_fn_from_complex_type(t) for t in schema.complex_types if sum(pass_at_init(attr) for attr in t.attrs) > 0]
 	complex_type_loaders = [load_fn_from_complex_type(t) for t in schema.complex_types]
 	out += "\n\n/* Internal loading functions, which validate and load a PugiXML DOM tree into memory. */\n"
+	out += "\n".join(simple_type_loaders)
+	out += "\n".join(complex_type_attr_loaders)
 	out += "\n".join(complex_type_loaders)
+
+	# No need to generate a writer for elements without content.
+	complex_type_writers = [write_fn_from_complex_type(t) for t in schema.complex_types if t.content is not None]
+	out += "\n\n/* Internal writing functions, which uxsdcxx uses to write out a class. */\n"
+	out += "\n".join(complex_type_writers)
+
 	if schema.has_dfa:
 		out += cpp_templates.dfa_error_defn
 	if schema.has_all:
 		out += cpp_templates.all_error_defn
 	if schema.has_attr:
 		out += cpp_templates.attr_error_defn
+	out += cpp_templates.get_line_number_defn
+
+	out += "\n\n} /* namespace uxsd */\n"
+	return out
+
+def render_impl_file(schema: UxsdSchema, cmdline: str, input_file: str, header_file_name: str) -> str:
+	"""Render a C++ implementation file to a string."""
+	out = ""
+	x = {"version": __version__,
+		"cmdline": cmdline,
+		"input_file": input_file,
+		"md5": utils.md5(input_file)}
+	out += cpp_templates.impl_comment.substitute(x)
+	out += "#include \"%s\"" % header_file_name
+	out += "\n\n/* All uxsdcxx functions and structs live in this namespace. */\n"
+	out += "namespace uxsd {\n\n"
+
 	out += "\n} /* namespace uxsd */\n"
 	return out

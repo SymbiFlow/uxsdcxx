@@ -184,7 +184,7 @@ def lexer_from_enum(t: UxsdEnum) -> str:
 	triehash_alph = [(x, "%s::%s" % (t.cpp, utils.to_token(x))) for x in t.enumeration]
 	out += utils.indent(triehash.gen_lexer_body(triehash_alph))
 	out += "\tif(throw_on_invalid)\n"
-	out += "\t\t(*report_error)((\"Found unrecognized enum value \" + std::string(in) + \" of %s.\").c_str());\n" % t.cpp
+	out += "\t\tnoreturn_report(report_error, (\"Found unrecognized enum value \" + std::string(in) + \" of %s.\").c_str());\n" % t.cpp
 	out += "\treturn %s::UXSD_INVALID;\n" % t.cpp
 	out += "}\n"
 	return out
@@ -219,15 +219,13 @@ def lexer_from_complex_type(t: UxsdComplex) -> str:
 		out += "inline gtok_%s lex_node_%s(const char *in, const std::function<void(const char *)> *report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(e.name, "gtok_%s::%s" % (t.cpp, utils.to_token(e.name))) for e in t.content.children]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\t(*report_error)((\"Found unrecognized child \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
-		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
+		out += "\tnoreturn_report(report_error, (\"Found unrecognized child \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
 		out += "}\n"
 	if t.attrs:
 		out += "inline atok_%s lex_attr_%s(const char *in, const std::function<void(const char *)> * report_error){\n" % (t.cpp, t.cpp)
 		triehash_alph = [(x.name, "atok_%s::%s" % (t.cpp, utils.to_token(x.name))) for x in t.attrs]
 		out += utils.indent(triehash.gen_lexer_body(triehash_alph))
-		out += "\t(*report_error)((\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
-		out += "\tthrow std::runtime_error(\"Unreachable code!\");\n"
+		out += "\tnoreturn_report(report_error, (\"Found unrecognized attribute \" + std::string(in) + \" of <%s>.\").c_str());\n" % t.name
 		out += "}\n"
 	return out
 
@@ -411,7 +409,7 @@ def _gen_load_all(t: UxsdComplex) -> str:
 	out += "\tgtok_%s in = lex_node_%s(node.name(), report_error);\n" % (t.cpp, t.cpp)
 
 	out += "\tif(gstate[(int)in] == 0) gstate[(int)in] = 1;\n"
-	out += "\telse (*report_error)((\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\").c_str());\n" % t.name
+	out += "\telse noreturn_report(report_error, (\"Duplicate element \" + std::string(node.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for el in t.content.children:
@@ -440,7 +438,7 @@ def _gen_load_required_attrs(t: UxsdComplex) -> str:
 	out += "for(pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()){\n"
 	out += "\tatok_%s in = lex_attr_%s(attr.name(), report_error);\n" % (t.cpp, t.cpp)
 	out += "\tif(astate[(int)in] == 0) astate[(int)in] = 1;\n"
-	out += "\telse (*report_error)((\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\").c_str());\n" % t.name
+	out += "\telse noreturn_report(report_error, (\"Duplicate attribute \" + std::string(attr.name()) + \" in <%s>.\").c_str());\n" % t.name
 
 	out += "\tswitch(in){\n";
 	for attr in t.attrs:
@@ -522,7 +520,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 		out += utils.indent(_gen_load_attrs(t))
 	else:
 		out += "\tif(root.first_attribute())\n"
-		out += "\t\t(*report_error)(\"Unexpected attribute in <%s>.\");\n" % t.name
+		out += "\t\tnoreturn_report(report_error, \"Unexpected attribute in <%s>.\");\n" % t.name
 	out += "\n"
 
 	if isinstance(t.content, UxsdDfa):
@@ -535,7 +533,7 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 
 	if not isinstance(t.content, (UxsdDfa, UxsdAll)):
 		out += "\tif(root.first_child().type() == pugi::node_element)\n"
-		out += "\t\t(*report_error)(\"Unexpected child element in <%s>.\");\n" % t.name
+		out += "\t\tnoreturn_report(report_error, \"Unexpected child element in <%s>.\");\n" % t.name
 	out += "\n"
 
 	out += "}\n"
@@ -556,7 +554,7 @@ def load_fn_from_simple_type(t: UxsdSimple) -> str:
 	if isinstance(t, UxsdAtomic):
 		out += "\tout = %s;\n" % (t.cpp_load_format % "in")
 		out += "\tif(errno != 0)\n"
-		out += "\t\t(*report_error)((\"Invalid value `\" + std::string(in) + \"` when loading into a %s.\").c_str());\n" % t.cpp
+		out += "\t\tnoreturn_report(report_error, (\"Invalid value `\" + std::string(in) + \"` when loading into a %s.\").c_str());\n" % t.cpp
 	elif isinstance(t, UxsdEnum):
 		out += "\tout = lex_%s(in, true);\n" % t.cpp
 	else:
@@ -794,6 +792,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interf
 	out += "namespace uxsd {\n"
 
 	out += cpp_templates.get_line_number_decl
+	out += cpp_templates.report_error_decl
 
 	out += "\n/* Declarations for internal load functions for the complex types. */\n"
 	load_fn_decls = []

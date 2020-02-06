@@ -107,7 +107,7 @@ dfa_error_decl = """
 /**
  * Internal error function for xs:choice and xs:sequence validators.
  */
-inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len, const std::function<void(const char *)> * report_error);
+[[noreturn]] inline void dfa_error(const char *wrong, const int *states, const char * const *lookup, int len, const std::function<void(const char *)> * report_error);
 """
 
 all_error_decl = """
@@ -115,7 +115,7 @@ all_error_decl = """
  * Internal error function for xs:all validators.
  */
 template<std::size_t N>
-inline void all_error(std::bitset<N> gstate, const char * const *lookup, const std::function<void(const char *)> * report_error);
+[[noreturn]] inline void all_error(std::bitset<N> gstate, const char * const *lookup, const std::function<void(const char *)> * report_error);
 """
 
 attr_error_decl = """
@@ -123,7 +123,7 @@ attr_error_decl = """
  * Internal error function for attribute validators.
  */
 template<std::size_t N>
-inline void attr_error(std::bitset<N> astate, const char * const *lookup, const std::function<void(const char *)> * report_error);
+[[noreturn]] inline void attr_error(std::bitset<N> astate, const char * const *lookup, const std::function<void(const char *)> * report_error);
 """
 
 get_line_number_decl = """
@@ -145,7 +145,7 @@ inline void dfa_error(const char *wrong, const int *states, const char * const *
 	for(unsigned int i=1; i<expected.size(); i++)
 		expected_or += std::string(" or ") + expected[i];
 
-	(*report_error)(("Expected " + expected_or + ", found " + std::string(wrong)).c_str());
+	noreturn_report(report_error, ("Expected " + expected_or + ", found " + std::string(wrong)).c_str());
 }
 """
 
@@ -161,7 +161,7 @@ inline void all_error(std::bitset<N> gstate, const char * const *lookup, const s
 	for(unsigned int i=1; i<missing.size(); i++)
 		missing_and += std::string(", ") + missing[i];
 
-	(*report_error)(("Didn't find required elements " + missing_and + ".").c_str());
+	noreturn_report(report_error, ("Didn't find required elements " + missing_and + ".").c_str());
 }
 """
 
@@ -177,7 +177,7 @@ inline void attr_error(std::bitset<N> astate, const char * const *lookup, const 
 	for(unsigned int i=1; i<missing.size(); i++)
 		missing_and += std::string(", ") + missing[i];
 
-	(*report_error)(("Didn't find required attributes " + missing_and + ".").c_str());
+	noreturn_report(report_error, ("Didn't find required attributes " + missing_and + ".").c_str());
 }
 """
 
@@ -222,5 +222,12 @@ inline void get_line_number(const char *filename, std::ptrdiff_t target_offset, 
 	*line = current_line;
 	*col = target_offset - current_line_offset;
 	fclose(f);
+}
+"""
+
+report_error_decl = """
+[[noreturn]] inline void noreturn_report(const std::function<void(const char *)> * report_error, const char *msg) {
+    (*report_error)(msg);
+    throw std::runtime_error("Unreachable!");
 }
 """

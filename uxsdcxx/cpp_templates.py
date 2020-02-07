@@ -72,6 +72,8 @@ header_comment = Template("""#pragma once
  */
 
 #include <functional>
+#include <limits>
+#include <iomanip>
 
 """)
 

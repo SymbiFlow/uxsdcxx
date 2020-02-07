@@ -633,10 +633,10 @@ def _gen_write_attr(a: UxsdAttribute, parent: str, context: str = "context") -> 
 	"""Function to generate partial code which writes out a single XML attribute."""
 	out = ""
 	if not a.optional or a.default_value:
-		out += "os << \" %s=\\\"\" << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
+		out += "os << \" %s=\\\"\" << std::setprecision(FLOAT_PRECISION) << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
 	else:
 		out += "if((bool)%s)\n" % _gen_check_simple(a, parent, context)
-		out += "\tos << \" %s=\\\"\" << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
+		out += "\tos << \" %s=\\\"\" << std::setprecision(FLOAT_PRECISION) << %s << \"\\\"\";\n" % (a.name, _gen_write_simple(a, parent, context))
 	return out
 
 def _gen_write_complex_element(e: UxsdElement, parent: str) -> str:
@@ -695,13 +695,13 @@ def _gen_write_element(e: UxsdElement, parent: str) -> str:
 	if isinstance(e.type, UxsdSimple):
 		if e.many:
 			out += "for(size_t i=0, n=in.num_%s(context); i<n; i++){\n" % _gen_stub_suffix(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "\tos << \"<%s>\" << std::setprecision(FLOAT_PRECISION) << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 			out += "}\n"
 		elif e.optional:
 			out += "if((bool)%s)\n" % _gen_write_simple(e, parent)
-			out += "\tos << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "\tos << \"<%s>\" << std::setprecision(FLOAT_PRECISION) << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 		else:
-			out += "os << \"<%s>\" << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
+			out += "os << \"<%s>\" << std::setprecision(FLOAT_PRECISION) << %s << \"</%s>\\n\";\n" % (e.name, _gen_write_simple(e, parent), e.name)
 	elif isinstance(e.type, UxsdComplex):
 		out += "{\n"
 		out += utils.indent(_gen_write_complex_element(e, parent))
@@ -791,6 +791,8 @@ def render_header_file(schema: UxsdSchema, cmdline: str, input_file: str, interf
 	out += '#include "{}"'.format(interface_header_file_name)
 	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {\n"
+
+	out += "static constexpr int FLOAT_PRECISION = std::numeric_limits<float>::max_digits10;\n"
 
 	out += cpp_templates.get_line_number_decl
 	out += cpp_templates.report_error_decl

@@ -274,6 +274,7 @@ def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
 
 		arg = "%s_%s" % (t.type.name, checked(attr.name))
 		out += "\t%s %s;\n" % (attr.type.cpp, arg)
+		out += "\tmemset(&{name}, 0, sizeof({name}));\n".format(name=arg)
 		args.append(arg)
 		load_args.append('&' + arg)
 

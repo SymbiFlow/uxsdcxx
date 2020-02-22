@@ -212,9 +212,9 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "template <class T, typename Context>\n"
 	out += "inline void load_%s_capnp(T &out, kj::ArrayPtr<const ::capnp::word> data, Context &context, const char * filename){\n" % e.name
 
-	out += "\t/* Increase reader limit to 1G words. */\n"
+	out += "\t/* Remove traversal limits. */\n"
 	out += "\t::capnp::ReaderOptions opts = ::capnp::ReaderOptions();\n"
-	out += "\topts.traversalLimitInWords = 1024 * 1024 * 1024;\n"
+	out += "\topts.traversalLimitInWords = std::numeric_limits<uint64_t>::max();\n"
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
 	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
 	out += "\tstd::vector<std::pair<const char*, size_t>> stack;\n"
@@ -504,6 +504,7 @@ def render_header_file(schema: UxsdSchema, cmdline: str, capnp_file_name: str, i
 	out += '#include <tuple>\n'
 	out += '#include <vector>\n'
 	out += '#include <sstream>\n'
+	out += '#include <limits>\n'
 	out += '#include "capnp/serialize.h"\n'
 	out += '#include "{}.h"\n'.format(capnp_file_name)
 	out += '#include "{}"\n'.format(interface_file_name)

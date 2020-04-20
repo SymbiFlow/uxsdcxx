@@ -183,9 +183,9 @@ inline void attr_error(std::bitset<N> astate, const char * const *lookup, const 
 
 get_line_number_defn = """
 inline void get_line_number(const char *filename, std::ptrdiff_t target_offset, int * line, int * col) {
-	FILE* f = fopen(filename, "rb");
+	std::unique_ptr<FILE,decltype(&fclose)> f(fopen(filename, "rb"), fclose);
 
-	if (f == nullptr) {
+	if (!f) {
 		throw std::runtime_error(std::string("Failed to open file") + filename);
 	}
 
@@ -197,7 +197,7 @@ inline void get_line_number(const char *filename, std::ptrdiff_t target_offset, 
 	char buffer[1024];
 	std::size_t size;
 
-	while ((size = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+	while ((size = fread(buffer, 1, sizeof(buffer), f.get())) > 0) {
 		for (std::size_t i = 0; i < size; ++i) {
 			if (buffer[i] == '\\n') {
 				current_line += 1;
@@ -221,7 +221,6 @@ inline void get_line_number(const char *filename, std::ptrdiff_t target_offset, 
 
 	*line = current_line;
 	*col = target_offset - current_line_offset;
-	fclose(f);
 }
 """
 

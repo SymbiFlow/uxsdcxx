@@ -96,7 +96,11 @@ includes = """
 #include <string>
 #include <vector>
 
+#ifdef __MACH__
+#include <mach/error.h>
+#else
 #include <error.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include "pugixml.hpp"

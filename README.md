@@ -1,5 +1,7 @@
 ## uxsdcxx
 
+[![Build Status](https://travis-ci.com/SymbiFlow/uxsdcxx.svg?branch=ci-and-cleanup)](https://travis-ci.com/SymbiFlow/uxsdcxx)
+
 ### Disclaimer: Pre-1.0.0 software. Support for anything might break.
 
 uxsdcxx is a tool to generate PugiXML-based C++ reader, validator and writer from an XSD schema. It can generate code for a subset of XSD 1.0.

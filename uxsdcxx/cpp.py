@@ -62,7 +62,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 		_add_field(_gen_context_type(e.type, "Write"), "init", e.name, _gen_required_attribute_arg_list(_gen_context_type(t, "Write"), e.type.attrs))
 		_add_field("void", "finish", e.name, _gen_context_type(e.type, "Write") + " &ctx")
 	def _add_add_simple(e: UxsdElement):
-		_add_field("void", "add", e.name, "{} {}, {} &ctx" % (e.type.cpp, checked(e.name), _gen_context_type(t, "Write")))
+		_add_field("void", "add", e.name, "{} {}, {} &ctx".format(e.type.cpp, checked(e.name), _gen_context_type(t, "Write")))
 	def _add_add_complex(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
 		_add_field("void", "preallocate", e.name, _gen_context_type(t, "Write") + " &ctx, size_t size")

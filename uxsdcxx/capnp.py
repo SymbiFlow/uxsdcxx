@@ -303,14 +303,13 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 							required_attrs=_gen_required_attribute_arg_list(el, access))
 					out += "\t\tload_{suffix}_capnp_type({access}, out, child_context, report_error, stack);\n".format(
 							access=access,
-							suffix=el.type.name,
-							pname=name)
+							suffix=el.type.name)
 					out += "\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
 				else:
 					out += "\t\tout.init_{suffix}({data}, context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
-							data=_gen_load_simple(el, 'root.get{name}()'.format(name)))
+							data=_gen_load_simple(el, 'root.get{name}()'.format(name=name)))
 				out += "\t}\n"
 
 			out += "\tstack->pop_back();\n"

@@ -3,10 +3,9 @@ CFLAGS := -O0 -g -I pugixml/src/ --std=c++11
 
 all: $(TESTS)
 
-
 # so that we don't run tests which have already passed
 %: %.xsd %_driver.cpp $(shell find ../uxsdcxx/)
-	../env/bin/uxsdcxx $@.xsd
+	uxsdcxx $@.xsd
 	g++ $(CFLAGS) pugixml/src/pugixml.cpp $@_driver.cpp -o $@.test
 	./$@.test $@.xml
 	diff $@.xml.generated $@.xml.generated.2

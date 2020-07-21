@@ -99,6 +99,12 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 		assert isinstance(e.type, UxsdSimple)
 		_add_field(
 			ret="void",
+			verb="preallocate",
+			what=e.name,
+			args="{context_type} &ctx, size_t size".format(
+				context_type=_gen_context_type(t, "Write")))
+		_add_field(
+			ret="void",
 			verb="add",
 			what=e.name,
 			args="{cpp_type} {cpp_name}, {context_type} &ctx".format(
@@ -113,7 +119,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 			verb="preallocate",
 			what=e.name,
 			args="{context_type} &ctx, size_t size".format(
-				context_type=_gen_context_type(e.type, "Write")))
+				context_type=_gen_context_type(t, "Write")))
 		_add_field(
 			ret=_gen_context_type(e.type, "Write"),
 			verb="add",
@@ -136,11 +142,21 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 
 	def _add_get_simple(e: Union[UxsdElement, UxsdAttribute]):
 		assert isinstance(e.type, UxsdSimple)
-		_add_field(e.type.cpp, "get", e.name, _gen_context_type(t, "Read") + " &ctx")
+		_add_field(
+			ret=e.type.cpp,
+			verb="get",
+			what=e.name,
+			args="{context_type} &ctx".format(
+				context_type=_gen_context_type(t, "Read")))
 
 	def _add_get_simple_many(e: UxsdElement):
 		assert isinstance(e.type, UxsdSimple)
-		_add_field(e.type.cpp, "get", e.name, _gen_context_type(t, "Read") + " &ctx")
+		_add_field(
+			ret=e.type.cpp,
+			verb="get",
+			what=e.name,
+			args="size_t n, {context_type} &ctx".format(
+				context_type=_gen_context_type(t, "Read")))
 
 	def _add_get_complex(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
@@ -149,7 +165,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 			verb="get",
 			what=e.name,
 			args="{context_type} &ctx".format(
-				context_type=_gen_context_type(e.type, "Read")))
+				context_type=_gen_context_type(t, "Read")))
 
 	def _add_get_complex_many(e: UxsdElement):
 		assert isinstance(e.type, UxsdComplex)
@@ -157,7 +173,7 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 			ret=_gen_context_type(e.type, "Read"),
 			verb="get",
 			what=e.name,
-			args="int n, {context_type} &ctx".format(
+			args="size_t n, {context_type} &ctx".format(
 				context_type=_gen_context_type(t, "Read")))
 
 	def _add_num(e: UxsdElement):

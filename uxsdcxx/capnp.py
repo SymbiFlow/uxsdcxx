@@ -130,7 +130,7 @@ def _gen_conv_enum(t: UxsdEnum) -> str:
 def _gen_required_attribute_arg_list(t: UxsdComplex, input: str) -> str:
 	required_attrs = []
 
-	for attr in sorted(t.type.attrs, key=lambda attr: attr.name):
+	for attr in sorted(t.attrs, key=lambda attr: attr.name):
 		if cpp.pass_at_init(attr):
 			required_attrs.append(_gen_load_simple(
 				attr.type,
@@ -216,7 +216,7 @@ def load_fn_from_element(e: UxsdElement) -> str:
 	out += "\t::capnp::ReaderOptions opts = ::capnp::ReaderOptions();\n"
 	out += "\topts.traversalLimitInWords = std::numeric_limits<uint64_t>::max();\n"
 	out += "\t::capnp::FlatArrayMessageReader reader(data, opts);\n"
-	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e))
+	out += "\tauto root = reader.getRoot<ucap::{}>();\n".format(to_type(e.type))
 	out += "\tstd::vector<std::pair<const char*, size_t>> stack;\n"
 	out += "\tstack.reserve({});\n".format(INITIAL_STACK_DEPTH)
 	out += "\tstack.push_back(std::make_pair(\"root\", 0));\n"
@@ -280,16 +280,18 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 				if isinstance(el.type, UxsdComplex):
 					out += "\t\t\tauto child_context = out.add_{suffix}(context{required_attrs});\n".format(
 							suffix=suffix,
-							required_attrs=_gen_required_attribute_arg_list(el, 'el'))
+							required_attrs=_gen_required_attribute_arg_list(el.type, 'el'))
 					out += "\t\t\tload_{suffix}_capnp_type(el, out, child_context, report_error, stack);\n".format(
 							suffix=el.type.name)
 					out += "\t\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=suffix)
-				else:
+				elif isinstance(el.type, UxsdSimple):
 					out += "\t\t\tout.add_{suffix}({data}, context);\n".format(
 							suffix=suffix,
-							data=_gen_load_simple(el, 'el.get{}()'.format(name))
+							data=_gen_load_simple(el.type, 'el.get{}()'.format(name))
 							)
+				else:
+					raise TypeError("Element %s's type is neither complex nor simple." % el)
 				out += "\t\t\tstack->back().second += 1;\n"
 				out += "\t\t}\n"
 				out += "\t}\n"
@@ -300,16 +302,18 @@ def load_fn_from_complex_type(t: UxsdComplex) -> str:
 					access = 'child_el'
 					out += "\t\tauto child_context = out.init_{suffix}(context{required_attrs});\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
-							required_attrs=_gen_required_attribute_arg_list(el, access))
+							required_attrs=_gen_required_attribute_arg_list(el.type, access))
 					out += "\t\tload_{suffix}_capnp_type({access}, out, child_context, report_error, stack);\n".format(
 							access=access,
 							suffix=el.type.name)
 					out += "\t\tout.finish_{suffix}(child_context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name))
-				else:
+				elif isinstance(el.type, UxsdSimple):
 					out += "\t\tout.init_{suffix}({data}, context);\n".format(
 							suffix=cpp._gen_stub_suffix(el, t.name),
-							data=_gen_load_simple(el, 'root.get{name}()'.format(name=name)))
+							data=_gen_load_simple(el.type, 'root.get{name}()'.format(name=name)))
+				else:
+					raise TypeError("Element %s's type is neither complex nor simple." % el)
 				out += "\t}\n"
 
 			out += "\tstack->pop_back();\n"
@@ -567,6 +571,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		fields.append("inline %s %s_%s_%s(%s) override {\n%s}\n" % (ret, verb, t.name, what, args, utils.indent(impl)))
 
 	def _gen_set_required_attrs(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		impl = ""
 		for attr in sorted(e.type.attrs, key=lambda attr: attr.name):
 			if cpp.pass_at_init(attr):
@@ -589,6 +594,8 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		if not any_many:
 			return ""
 
+		# This is guaranteed at this point, but mypy can't keep track
+		assert isinstance(e.type.content, (UxsdDfa, UxsdAll))
 		impl = ""
 		for el in e.type.content.children:
 			if el.many:
@@ -626,6 +633,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		return impl
 
 	def _add_set(e: Union[UxsdElement, UxsdAttribute]):
+		assert isinstance(e.type, UxsdSimple)
 		impl = ""
 		impl += "builder.set{pname}({value});\n".format(
 				pname=utils.to_pascalcase(e.name),
@@ -653,7 +661,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		impl += "auto {name} = capnp::Orphanage::getForMessageContaining(builder).newOrphan<ucap::{pname}>();\n".format(
 				name=cpp.checked(e.name), pname=utils.to_pascalcase(e.type.name))
 		impl += "{pname}_.emplace_back(std::move({name}));\n".format(name=cpp.checked(e.name), pname=utils.pluralize(e.type.name))
-		impl += "auto child_builder = {pname}_.back().get();\n".format(name=e.type.name, pname=utils.pluralize(e.type.name))
+		impl += "auto child_builder = {pname}_.back().get();\n".format(pname=utils.pluralize(e.type.name))
 		impl += _gen_set_required_attrs(e)
 		impl += "return child_builder;\n"
 		_add_field(_gen_builder(e.type), "add", e.name, cpp._gen_required_attribute_arg_list(_gen_builder(t), e.type.attrs, context="builder"), impl)
@@ -670,6 +678,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		else: raise TypeError(e)
 
 	def _add_get_simple(e: Union[UxsdElement, UxsdAttribute]):
+		assert isinstance(e.type, UxsdSimple)
 		impl = ""
 		impl += "return {value};\n".format(value=_gen_load_simple(
 			e.type,
@@ -682,13 +691,15 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 		_add_field(e.type.cpp, "get", e.name, "int n, {} &reader".format(_gen_reader(t)), "")
 
 	def _add_get_complex(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		impl = ""
-		impl += "return reader.get{pname}();\n".format(name=e.type.name, pname=utils.to_pascalcase(e.name))
+		impl += "return reader.get{pname}();\n".format(pname=utils.to_pascalcase(e.name))
 		_add_field(_gen_reader(e.type), "get", e.name, _gen_reader(t) + " &reader", impl)
 
 	def _add_get_complex_many(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		impl = ""
-		impl += "return reader.get{pname}()[n];\n".format(name=e.type.name, pname=utils.to_pascalcase(utils.pluralize(e.name)))
+		impl += "return reader.get{pname}()[n];\n".format(pname=utils.to_pascalcase(utils.pluralize(e.name)))
 		_add_field(_gen_reader(e.type), "get", e.name, "int n, {} &reader".format(_gen_reader(t)), impl)
 
 	def _add_num(e: UxsdElement):
@@ -733,8 +744,7 @@ def _gen_capnp_impl(t: UxsdComplex, is_root : bool) -> str:
 				raise TypeError(e)
 	elif isinstance(t.content, UxsdLeaf):
 		impl = ""
-		impl += "builder.setValue(value);\n".format(
-				var=cpp.checked(t.name))
+		impl += "builder.setValue(value);\n"
 		_add_field("void", "set", "value", "{} value, {} &builder".format(t.content.type.cpp, _gen_builder(t)), impl)
 
 		impl = ""

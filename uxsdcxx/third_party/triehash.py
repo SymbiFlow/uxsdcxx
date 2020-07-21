@@ -99,7 +99,7 @@ class Trie:
 	# split at each level, so that all keys at all levels have the same
 	# length (so we can use a multi-byte switch).
 	def rebuild_tree(self):
-		new_split = 1e14
+		new_split = int(1e14)
 		for key in sorted(self.children.keys()):
 			special_length = self.alignpower2(len(key))
 			if special_length < new_split:

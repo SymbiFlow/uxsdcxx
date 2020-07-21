@@ -2,7 +2,7 @@ import re
 
 from typing import List, Union, Optional
 from functools import lru_cache
-from xml.etree import ElementTree as ET # type: ignore
+from xml.etree import ElementTree as ET
 
 from xmlschema.validators import ( # type: ignore
     XsdAttribute,

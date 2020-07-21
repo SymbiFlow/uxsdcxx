@@ -14,7 +14,7 @@ from xmlschema.validators import ( # type: ignore
 
 from automata.fa.dfa import DFA # type: ignore
 from automata.fa.nfa import NFA # type: ignore
-from .third_party.DFA import DFA as pDFA # type: ignore
+from .third_party.DFA import DFA as pDFA
 
 from itertools import permutations
 from typing import List, Tuple, Dict, Set, Union

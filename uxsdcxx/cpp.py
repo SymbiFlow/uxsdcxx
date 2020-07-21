@@ -78,8 +78,10 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 	def _add_get_simple_many(e: UxsdElement):
 		_add_field(e.type.cpp, "get", e.name, _gen_context_type(t, "Read") + " &ctx")
 	def _add_get_complex(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		_add_field(_gen_context_type(e.type, "Read"), "get", e.name, _gen_context_type(t, "Read") + " &ctx")
 	def _add_get_complex_many(e: UxsdElement):
+		assert isinstance(e.type, UxsdComplex)
 		_add_field(_gen_context_type(e.type, "Read"), "get", e.name, "int n, {}".format(_gen_context_type(t, "Read") + " &ctx"))
 	def _add_num(e: UxsdElement):
 		_add_field("size_t", "num", e.name, _gen_context_type(t, "Read") + " &ctx")

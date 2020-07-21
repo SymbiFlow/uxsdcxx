@@ -7,3 +7,4 @@ install:
 script:
     - mypy
     - flake8
+	- cd tests && make

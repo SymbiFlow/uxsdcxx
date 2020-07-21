@@ -663,9 +663,9 @@ def _gen_capnp_impl(t: UxsdComplex, is_root: bool) -> str:
 			ret="void",
 			verb="set",
 			what=e.name,
-			args="{attrs}, {builder} &builder".format(
+			args="{attrs}, {builder_type} &builder".format(
 				attrs=cpp._gen_attribute_arg(e),
-				builder=_gen_builder(t)),
+				builder_type=_gen_builder(t)),
 			impl="builder.set{pname}({value});\n".format(
 				pname=utils.to_pascalcase(e.name),
 				value=_gen_set_simple(e.type, e.name)))
@@ -696,10 +696,10 @@ def _gen_capnp_impl(t: UxsdComplex, is_root: bool) -> str:
 			ret="void",
 			verb="add",
 			what=e.name,
-			args="{cpp_type} {cpp_name}, {builder} &builder".format(
+			args="{cpp_type} {cpp_name}, {builder_type} &builder".format(
 				cpp_type=e.type.cpp,
 				cpp_name=cpp.checked(e.name),
-				builder=_gen_builder(t)),
+				builder_type=_gen_builder(t)),
 			impl="")
 
 	def _add_add_complex(e: UxsdElement):
@@ -727,8 +727,8 @@ def _gen_capnp_impl(t: UxsdComplex, is_root: bool) -> str:
 			ret="void",
 			verb="preallocate",
 			what=e.name,
-			args="{builder}&, size_t size".format(
-				builder=_gen_builder(t)),
+			args="{builder_type}&, size_t size".format(
+				builder_type=_gen_builder(t)),
 			impl="{pname}_.reserve(size);\n".format(
 				pname=utils.pluralize(e.type.name)))
 		_add_field(
@@ -819,9 +819,9 @@ def _gen_capnp_impl(t: UxsdComplex, is_root: bool) -> str:
 			ret="void",
 			verb="set",
 			what="value",
-			args="{cpp_type} value, {builder} &builder".format(
+			args="{cpp_type} value, {builder_type} &builder".format(
 				cpp_type=t.content.type.cpp,
-				builder=_gen_builder(t)),
+				builder_type=_gen_builder(t)),
 			impl="builder.setValue(value);\n")
 		_add_field(
 			ret=t.content.type.cpp,

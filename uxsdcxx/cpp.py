@@ -209,7 +209,8 @@ def _gen_virtual_fns(t: UxsdComplex) -> str:
 				context_type=_gen_context_type(t, "Read")))
 
 	out = ""
-	out += "/** Generated for complex type \"%s\":\n" % t.name
+	out += "/** Generated for complex type \"{name}\":\n".format(
+		name=t.name)
 	out += utils.to_comment_body(t.source)
 	out += "\n*/\n"
 	out += "\n".join(fields)
@@ -235,7 +236,8 @@ def gen_base_class(schema: UxsdSchema) -> str:
 		pname=class_name)
 	out += "class %sBase {\n" % class_name
 	out += "public:\n"
-	out += "\tvirtual ~%sBase() {}\n" % class_name
+	out += "\tvirtual ~{class_name}Base() {{}}\n".format(
+		class_name=class_name)
 
 	out += "\tvirtual void start_load(const std::function<void(const char*)> *report_error) = 0;\n"
 	out += "\tvirtual void finish_load() = 0;\n"
@@ -309,13 +311,21 @@ def tokens_from_complex_type(t: UxsdComplex) -> str:
 	if isinstance(t.content, (UxsdDfa, UxsdAll)):
 		enum_tokens = [utils.to_token(e.name) for e in t.content.children]
 		lookup_tokens = ["\"%s\"" % e.name for e in t.content.children]
-		out += "enum class gtok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "constexpr const char *gtok_lookup_%s[] = {%s};" % (t.cpp, ", ".join(lookup_tokens))
+		out += "enum class gtok_{type} {{{tokens}}};\n".format(
+			type=t.cpp,
+			tokens=", ".join(enum_tokens))
+		out += "constexpr const char *gtok_lookup_{type}[] = {{{lookup_tokens}}};".format(
+			type=t.cpp,
+			lookup_tokens=", ".join(lookup_tokens))
 	if t.attrs:
 		enum_tokens = [utils.to_token(x.name) for x in t.attrs]
 		lookup_tokens = ["\"%s\"" % x.name for x in t.attrs]
-		out += "\nenum class atok_%s {%s};\n" % (t.cpp, ", ".join(enum_tokens))
-		out += "constexpr const char *atok_lookup_%s[] = {%s};\n" % (t.cpp, ", ".join(lookup_tokens))
+		out += "\nenum class atok_{type} {{{tokens}}};\n".format(
+			type=t.cpp,
+			tokens=", ".join(enum_tokens))
+		out += "constexpr const char *atok_lookup_{type}[] = {{{lookup_tokens}}};\n".format(
+			type=t.cpp,
+			lookup_tokens=", ".join(lookup_tokens))
 	return out
 
 
@@ -390,9 +400,13 @@ def _gen_load_simple(t: UxsdSimple, input: str) -> str:
 	if isinstance(t, UxsdString):
 		return input
 	elif isinstance(t, UxsdEnum):
-		return "lex_%s(%s, true, report_error)" % (t.cpp, input)
+		return "lex_{type}({input}, true, report_error)".format(
+			type=t.cpp,
+			input=input)
 	else:
-		return "load_%s(%s, report_error)" % (utils.to_snakecase(t.cpp), input)
+		return "load_{type}({input}, report_error)".format(
+			type=utils.to_snakecase(t.cpp),
+			input=input)
 
 
 def _gen_load_element_complex(t: UxsdElement, parent: str) -> str:
@@ -924,7 +938,8 @@ def write_fn_from_complex_type(t: UxsdComplex) -> str:
 	assert isinstance(t.content, (UxsdDfa, UxsdAll, UxsdLeaf))
 	out = ""
 	out += "template<class T, typename Context>\n"
-	out += "inline void write_%s(T &in, std::ostream &os, Context &context){\n" % t.name
+	out += "inline void write_{name}(T &in, std::ostream &os, Context &context){{\n".format(
+		name=t.name)
 	out += "\t(void)in;\n"
 	out += "\t(void)os;\n"
 	out += "\t(void)context;\n"
@@ -932,7 +947,8 @@ def write_fn_from_complex_type(t: UxsdComplex) -> str:
 		for e in t.content.children:
 			out += utils.indent(_gen_write_element(e, t.name))
 	elif isinstance(t.content, UxsdLeaf):
-		out += "\tos << in.get_%s_value(context);\n" % t.name
+		out += "\tos << in.get_{name}_value(context);\n".format(
+			name=t.name)
 	else:
 		out += "\treturn;\n"
 
@@ -976,11 +992,12 @@ def render_interface_header_file(schema: UxsdSchema, cmdline: str, input_file: s
 		cmdline=cmdline,
 		input_file=input_file,
 		md5=utils.md5(input_file))
-	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "\n"
 	out += "#include <cstdlib>\n"
+	out += "#include <functional>\n"
 	out += "#include <tuple>\n"
 	out += "\n"
+	out += "\n/* All uxsdcxx functions and structs live in this namespace. */\n"
 	out += "namespace uxsd {"
 
 	if schema.enums:

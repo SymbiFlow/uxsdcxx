@@ -1,3 +1,9 @@
+# generated files
+*_uxsdcxx.h
+*_uxsdcxx_interface.h
+*_uxsdcxx.capnp
+*_uxsdcxx_capnp.h
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

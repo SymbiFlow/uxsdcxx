@@ -18,6 +18,7 @@ def uxsdcxx() -> None:
 	header_file_name = base + "_uxsdcxx.h"
 	cmdline = " ".join(sys.argv)
 	schema = UxsdSchema(xmlschema.validators.XMLSchema10(input_file))
+
 	interface_header_file = open(interface_header_file_name, "w")
 	interface_header_file.write(cpp.render_interface_header_file(schema, cmdline, input_file))
 	interface_header_file.close()

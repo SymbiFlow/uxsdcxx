@@ -4,36 +4,42 @@ from typing import List, Union, Optional
 from functools import lru_cache
 from xml.etree import ElementTree as ET
 
-from xmlschema.validators import ( # type: ignore
-    XsdAttribute,
-    XsdAtomicBuiltin,
-    XsdAtomicRestriction,
-    XsdComplexType,
-    XsdElement,
-    XsdGroup,
-    XsdSimpleType,
-    XsdList,
-    XsdUnion,
-    XMLSchema10,
+from xmlschema.validators import (  # type: ignore
+	XsdAttribute,
+	XsdAtomicBuiltin,
+	XsdAtomicRestriction,
+	XsdComplexType,
+	XsdElement,
+	XsdGroup,
+	XsdSimpleType,
+	XsdList,
+	XsdUnion,
+	XMLSchema10,
 )
 
 from . import cpp_templates as tpl
 from .dfa import dfa_from_group, XsdDFA
 
+
 class UxsdType:
 	"""An XSD type which corresponds to a type in C++."""
 	name: str
+
 	def __init__(self):
 		raise TypeError("Use child types instead.")
+
 	@property
 	def cpp(self) -> str:
 		raise NotImplementedError("You should implement type.cpp.")
 
+
 class UxsdSourcable:
 	"""A type for which you can get the corresponding XSD source."""
 	xml_elem: ET.Element
+
 	def __init__(self):
 		raise TypeError("Use child types instead.")
+
 	@property
 	def source(self) -> str:
 		# Fixes ET's indentation and removes the namespace attribute.
@@ -41,62 +47,78 @@ class UxsdSourcable:
 		out = re.sub(r'xmlns:xs="(.*?)" ', r'', out)
 		return re.sub(r"  (.*)", r"\1", out).rstrip()
 
+
 class UxsdSimple(UxsdType):
 	pass
 
+
 class UxsdUnion(UxsdSimple, UxsdSourcable):
 	member_types: List[UxsdSimple]
+
 	def __init__(self, name, member_types, xml_elem):
 		self.name = name
 		self.member_types = member_types
 		self.xml_elem = xml_elem
+
 	@property
 	def cpp(self) -> str:
 		return "union_%s" % self.name
 
+
 class UxsdEnum(UxsdSimple):
 	enumeration: List[str]
+
 	def __init__(self, name, enumeration):
 		self.name = name
 		self.enumeration = enumeration
+
 	@property
 	def cpp(self) -> str:
 		return "enum_%s" % self.name
 
+
 class UxsdAtomic(UxsdSimple):
 	def __init__(self):
 		raise TypeError("Use child types instead.")
+
 	@property
 	def cpp(self) -> str:
 		return tpl.atomic_builtins[self.name]
+
 	@property
 	def cpp_load_format(self) -> str:
 		return tpl.atomic_builtin_load_formats[self.name]
+
 
 class UxsdNumber(UxsdAtomic):
 	def __init__(self, name):
 		self.name = name
 
+
 class UxsdString(UxsdAtomic):
 	def __init__(self):
 		self.name = "string"
+
 
 class UxsdAttribute:
 	name: str
 	default_value: Optional[str]
 	optional: bool
 	type: UxsdSimple
+
 	def __init__(self, name, default_value, optional, type):
 		self.name = name
 		self.default_value = default_value
 		self.optional = optional
 		self.type = type
 
+
 class UxsdElement(UxsdSourcable):
 	name: str
 	many: bool
 	optional: bool
 	type: UxsdType
+
 	def __init__(self, name, many, optional, type, xml_elem):
 		self.name = name
 		self.many = many
@@ -104,39 +126,50 @@ class UxsdElement(UxsdSourcable):
 		self.type = type
 		self.xml_elem = xml_elem
 
+
 class UxsdContentType:
 	def __init__(self):
 		raise TypeError("Use child types instead.")
 
+
 class UxsdAll(UxsdContentType):
 	children: List[UxsdElement]
+
 	def __init__(self, children):
 		self.children = children
+
 
 class UxsdDfa(UxsdContentType):
 	children: List[UxsdElement]
 	dfa: XsdDFA
+
 	def __init__(self, children, dfa):
 		self.children = children
 		self.dfa = dfa
 
+
 class UxsdLeaf(UxsdContentType):
 	type: UxsdSimple
+
 	def __init__(self, type):
 		self.type = type
+
 
 class UxsdComplex(UxsdType, UxsdSourcable):
 	"""An XSD complex type. It has attributes and content."""
 	attrs: List[UxsdAttribute]
 	content: Optional[UxsdContentType]
+
 	def __init__(self, name, attrs, content, xml_elem):
 		self.name = name
 		self.attrs = attrs
 		self.content = content
 		self.xml_elem = xml_elem
+
 	@property
 	def cpp(self) -> str:
 		return "t_%s" % self.name
+
 
 class UxsdSchema:
 	"""A XSD schema tree derived from xmlschema's tree.
@@ -171,9 +204,12 @@ class UxsdSchema:
 	@lru_cache(maxsize=None)
 	def visit_group(self, t: XsdGroup, many=False, optional=False) -> List[UxsdElement]:
 		out: List[UxsdElement] = []
-		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] == 0: optional = True
-		if not many and t.model == "choice": optional = True
+		if t.occurs[1] is None or t.occurs[1] > 1:
+			many = True
+		if t.occurs[0] == 0:
+			optional = True
+		if not many and t.model == "choice":
+			optional = True
 		for e in t._group:
 			if isinstance(e, XsdGroup):
 				out += self.visit_group(e, many, optional)
@@ -185,8 +221,10 @@ class UxsdSchema:
 
 	@lru_cache(maxsize=None)
 	def visit_element(self, t: XsdElement, many=False, optional=False) -> UxsdElement:
-		if t.occurs[1] is None or t.occurs[1] > 1: many = True
-		if t.occurs[0] == 0: optional = True
+		if t.occurs[1] is None or t.occurs[1] > 1:
+			many = True
+		if t.occurs[0] == 0:
+			optional = True
 
 		type: UxsdType
 		if isinstance(t.type, XsdComplexType):
@@ -312,9 +350,13 @@ class UxsdSchema:
 
 		# Collect complex types and sort by tree height.
 		def _key_type(x: UxsdType, visited=None) -> int:
-			if not visited: visited=set()
-			if x in visited: return 0
-			else: visited.add(x)
+			if not visited:
+				visited = set()
+			if x in visited:
+				return 0
+			else:
+				visited.add(x)
+
 			if isinstance(x, UxsdComplex) and isinstance(x.content, (UxsdAll, UxsdDfa)):
 				tree_heights: List[int] = []
 				for child in x.content.children:

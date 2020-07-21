@@ -6,20 +6,17 @@
 # * Rename the DFA states.
 # * Return the DFA, where it would be emitted as C++ code.
 
-import xmlschema # type: ignore
-from xmlschema.validators import ( # type: ignore
-    XsdElement,
-    XsdGroup
+from xmlschema.validators import (  # type: ignore
+	XsdElement,
+	XsdGroup
 )
 
-from automata.fa.dfa import DFA # type: ignore
-from automata.fa.nfa import NFA # type: ignore
+from automata.fa.dfa import DFA  # type: ignore
+from automata.fa.nfa import NFA  # type: ignore
 from .third_party.DFA import DFA as pDFA
 
-from itertools import permutations
 from typing import List, Tuple, Dict, Set, Union
 
-from pprint import pprint
 
 class XsdDFA:
 	states: Set[int]
@@ -27,6 +24,7 @@ class XsdDFA:
 	accepts: Set[int]
 	alphabet: List[str]
 	transitions: Dict[int, Dict[str, int]]
+
 
 def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	# Fill in a NFA of automata-lib type.
@@ -131,19 +129,22 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	for v in _nfa_state_transitions.values():
 		input_symbols |= set(v.keys())
 	# Remove epsilon from the alphabet.
-	if "" in input_symbols: input_symbols.remove("")
+	if "" in input_symbols:
+		input_symbols.remove("")
 
-	nfa = NFA(states=_nfa_states,
-			input_symbols=input_symbols,
-			transitions=_nfa_state_transitions,
-			initial_state=init,
-			final_states={final})
+	nfa = NFA(
+		states=_nfa_states,
+		input_symbols=input_symbols,
+		transitions=_nfa_state_transitions,
+		initial_state=init,
+		final_states={final})
 	dfa = DFA.from_nfa(nfa)
-	pdfa = pDFA(dfa.states,
-			dfa.input_symbols,
-			lambda q,c: dfa.transitions[q][c],
-			dfa.initial_state,
-			dfa.final_states)
+	pdfa = pDFA(
+		dfa.states,
+		dfa.input_symbols,
+		lambda q, c: dfa.transitions[q][c],
+		dfa.initial_state,
+		dfa.final_states)
 	pdfa.minimize()
 
 	# "{}" comes from automata-lib and means trap state.
@@ -157,6 +158,13 @@ def dfa_from_group(t: XsdGroup) -> XsdDFA:
 	out.start = state_map[pdfa.start]
 	out.accepts = {state_map[x] for x in pdfa.accepts if x != "{}"}
 	out.alphabet = _alphabet
-	out.transitions = {state_map[q]: {k: state_map[pdfa.delta(q, k)] for k in pdfa.alphabet if pdfa.delta(q, k) != "{}"} for q in pdfa.states if q != "{}"}
+	out.transitions = {
+		state_map[q]: {
+			k: state_map[pdfa.delta(q, k)]
+			for k in pdfa.alphabet
+			if pdfa.delta(q, k) != "{}"
+		}
+		for q in pdfa.states
+		if q != "{}"}
 
 	return out

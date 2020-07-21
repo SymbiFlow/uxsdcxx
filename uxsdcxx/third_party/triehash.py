@@ -1,5 +1,3 @@
-#/usr/bin/env python3
-#
 # This is julian-klode's triehash translated to Python and modified for use with uxsdcxx.
 #
 # Copyright (C) 2016 Julian Andres Klode <jak@jak-linux.org>
@@ -25,18 +23,22 @@
 
 # TODO: Add the non-64bit-aligned trie alternative which is present in triehash.pl.
 
-from typing import List, Tuple, Dict, Set, Union
+from typing import List, Tuple
 
-# This implements a simple trie. Each node has three attributes:
-#
-# children - A hash of keys to other nodes
-# value    - The value to be stored here
-# label    - A named representation of the value.
-#
-# The key at each level of the trie can consist of one or more bytes, and the
-# trie can be normalized to a form where all keys at a level have the same
-# length using rebuild_tree().
+
 class Trie:
+	"""
+	This implements a simple trie. Each node has three attributes:
+
+	children - A hash of keys to other nodes
+	value    - The value to be stored here
+	label    - A named representation of the value.
+
+	The key at each level of the trie can consist of one or more bytes, and the
+	trie can be normalized to a form where all keys at a level have the same
+	length using rebuild_tree().
+	"""
+
 	def __init__(self):
 		self.children = {}
 		self.value = None
@@ -45,8 +47,10 @@ class Trie:
 	# Return the largest power of 2 smaller or equal to the argument.
 	# 16-bit reads are slow: don't include them
 	def alignpower2(self, length):
-		if length >= 8: return 8
-		if length >= 4: return 4
+		if length >= 8:
+			return 8
+		if length >= 4:
+			return 4
 		return 1
 
 	# Split the key into a head block and a tail
@@ -81,7 +85,8 @@ class Trie:
 					if child is not None:
 						new.children[key] = child
 						found = 1
-			if not found: return None
+			if not found:
+				return None
 		else:
 			new.value = self.value
 			new.label = self.label
@@ -91,9 +96,10 @@ class Trie:
 	# Reinsert all value nodes into the specified $trie, prepending $prefix
 	# to their $paths.
 	def reinsert_value_nodes_into(self, trie, prefix):
-		if self.value is not None: trie.insert(prefix, self.label, self.value)
+		if self.value is not None:
+			trie.insert(prefix, self.label, self.value)
 		for key in sorted(self.children.keys()):
-			self.children[key].reinsert_value_nodes_into(trie, prefix+key)
+			self.children[key].reinsert_value_nodes_into(trie, prefix + key)
 
 	# This rebuilds the trie, choosing the smallest
 	# split at each level, so that all keys at all levels have the same
@@ -116,6 +122,7 @@ class Trie:
 			new.children[head] = new.children[head].rebuild_tree()
 		return new
 
+
 def gen_prelude() -> str:
 	out = ""
 	out += "typedef const uint32_t __attribute__((aligned(1))) triehash_uu32;\n"
@@ -129,7 +136,6 @@ def gen_prelude() -> str:
 	out += "#endif\n"
 	return out
 
-from pprint import pprint
 
 def gen_lexer_body(alphabet: List[Tuple[str, str]]) -> str:
 	out = ""
@@ -138,21 +144,23 @@ def gen_lexer_body(alphabet: List[Tuple[str, str]]) -> str:
 
 	def case_label(key):
 		x = len(key)
-		return " | ".join(["onechar('%s', %d, %d)" % (key[i], 8*i, 8*x) for i in range(0, x)])
+		return " | ".join(["onechar('%s', %d, %d)" % (key[i], 8 * i, 8 * x) for i in range(0, x)])
 
 	def lexer_case(trie, indent="", index=0):
 		out = ""
 		if not trie.children:
-			if trie.value: return indent + "return %s;\n"  % trie.value
-			else: return indent + "break;\n"
+			if trie.value:
+				return indent + "return %s;\n" % trie.value
+			else:
+				return indent + "break;\n"
 		key_length = len(sorted(trie.children.keys())[-1])
 		if key_length == 1:
 			out += indent + "switch(in[%d]){\n" % index
 		else:
-			out += indent + "switch(*((triehash_uu%d*)&in[%d])){\n" % (8*key_length, index)
+			out += indent + "switch(*((triehash_uu%d*)&in[%d])){\n" % (8 * key_length, index)
 		for key in sorted(trie.children.keys()):
 			out += indent + "case %s:\n" % case_label(key)
-			out += lexer_case(trie.children[key], indent+"\t", index+len(key))
+			out += lexer_case(trie.children[key], indent + "\t", index + len(key))
 			out += indent + "break;\n"
 		out += indent + "default: break;\n"
 		out += indent + "}\n"

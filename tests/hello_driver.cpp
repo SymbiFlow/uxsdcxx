@@ -17,7 +17,7 @@ public:
 	void start_write(){}
 	void finish_write(){}
 	void error_encountered(const char * file, int line, const char *message){
-		printf("%s:%d %s", file, line, message);
+		std::cerr << file << ":" << line << ": " << message << std::endl;
 		throw std::runtime_error("Error while reading file.");
 	}
 	inline void set_hello_greeting(const char * greeting, void *& /*ctx*/){
@@ -43,7 +43,12 @@ int main(int argc, char **argv){
 	void *context;
 	std::ifstream is;
 	is.open(argv[1]);
-	uxsd::load_hello_xml(hello0, context, argv[1], is);
+	try {
+		uxsd::load_hello_xml(hello0, context, argv[1], is);
+	} catch (std::runtime_error &e) {
+		std::cout << e.what() << std::endl;
+		return 1;
+	}
 	is.close();
 
 	/* Write out. */
@@ -56,7 +61,12 @@ int main(int argc, char **argv){
 	/* Read back the generated file. */
 	HelloSerializer hello1;
 	is.open(of_name);
-	uxsd::load_hello_xml(hello1, context, of_name.c_str(), is);
+	try {
+		uxsd::load_hello_xml(hello1, context, of_name.c_str(), is);
+	} catch (std::runtime_error &e) {
+		std::cout << e.what() << std::endl;
+		return 1;
+	}
 	is.close();
 
 	/* Write out again. */

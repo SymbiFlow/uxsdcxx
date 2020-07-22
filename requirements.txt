@@ -4,3 +4,4 @@ mypy
 flake8
 coverage
 coverage-badge
+sphinx

@@ -2,6 +2,7 @@
 
 [![Build Status](https://travis-ci.com/SymbiFlow/uxsdcxx.svg?branch=ci-and-cleanup)](https://travis-ci.com/SymbiFlow/uxsdcxx)
 [![Coverage](coverage.svg)](coverage.svg)
+[![Documentation Build Status](https://readthedocs.org/projects/uxsdcxx/badge/?version=ci-and-cleanup)][docs]
 
 uxsdcxx is a tool which can generate [PugiXML](https://github.com/zeux/pugixml)-based C++ readers, validators and writers from XSD schemas. It generates an interface which can be implemented to bind the read/write logic to any kind of data structure.
 
@@ -200,8 +201,10 @@ hello_rebel.xml:5: Expected name, found greeting
 Error while reading file.
 ```
 
-This concludes our Hello World example. See the docs for more examples and API reference.
+This concludes our Hello World example. See the [docs][docs] for more examples and API reference.
 
 ### License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+[docs]: https://uxsdcxx.readthedocs.io/en/ci-and-cleanup/

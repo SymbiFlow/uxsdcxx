@@ -1,6 +1,7 @@
 ## uxsdcxx
 
 [![Build Status](https://travis-ci.com/SymbiFlow/uxsdcxx.svg?branch=ci-and-cleanup)](https://travis-ci.com/SymbiFlow/uxsdcxx)
+[![Coverage](coverage.svg)]()
 
 uxsdcxx is a tool which can generate [PugiXML](https://github.com/zeux/pugixml)-based C++ readers, validators and writers from XSD schemas. It generates an interface which can be implemented to bind the read/write logic to any kind of data structure.
 

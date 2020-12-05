@@ -2,15 +2,14 @@
 
 [![Build Status](https://travis-ci.com/SymbiFlow/uxsdcxx.svg?branch=ci-and-cleanup)](https://travis-ci.com/SymbiFlow/uxsdcxx)
 [![Coverage](coverage.svg)](coverage.svg)
-[![Documentation Build Status](https://readthedocs.org/projects/uxsdcxx/badge/?version=ci-and-cleanup)][docs]
 
-uxsdcxx is a tool which can generate [PugiXML](https://github.com/zeux/pugixml)-based C++ readers, validators and writers from XSD schemas. It generates an interface which can be implemented to bind the read/write logic to any kind of data structure.
+uxsdcxx is a tool which can generate [PugiXML](https://github.com/zeux/pugixml)-based C++ serializers from XSD schemas. It also generates an interface which should be implemented to bind the serialization logic to any kind of data structure.
 
-It includes a script `uxsdcap`, which generates a Cap'n Proto schema and Cap'n Proto read/write logic from an XSD schema. The same interface is used to bind the data structure to Cap'n Proto logic.
+An `uxsdcap` script is included which generates a Cap'n Proto schema and Cap'n Proto serialization logic from an XSD schema. The same interface is used to bind the data structure to the Cap'n Proto serializer.
 
-Therefore, if all goes well, one gets a schema-generated validator/reader/writer which supports both XML and Cap'n Proto and works with existing data structures.
+Therefore, if all goes well, one gets a schema-generated serializer which supports both XML and Cap'n Proto and works with existing data structures.
 
-### XML support
+### XSD support
 
 Currently, uxsdcxx can generate code for a subset of XSD 1.0.
 

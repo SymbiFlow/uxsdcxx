@@ -361,15 +361,15 @@ class UxsdSchema:
 				tree_heights: List[int] = []
 				for child in x.content.children:
 					if isinstance(child.type, UxsdComplex):
-						tree_heights.append(_key_type(x, visited))
+						tree_heights.append(_key_type(child.type, visited))
 					else:
 						tree_heights.append(1)
 				return max(tree_heights) + 1
 			else:
 				return 1
 
-		self.complex_types.sort(key=_key_type)
-		self.elements.sort(key=lambda x: _key_type(x.type))
+		self.complex_types.sort(key=_key_type, reverse=True)
+		self.elements.sort(key=lambda x: _key_type(x.type), reverse=True)
 
 	@property
 	def has_dfa(self) -> bool:

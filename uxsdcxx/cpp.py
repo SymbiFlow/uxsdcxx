@@ -238,11 +238,11 @@ def gen_base_class(schema: UxsdSchema) -> str:
 	out = ""
 	root = schema.root_element
 	class_name = utils.to_pascalcase(root.name)
-	out += "struct Default{pname}ContextTypes {{\n".format(pname=class_name)
+	out += "struct Default{pname}ContextTypes {{\n\t".format(pname=class_name)
 	out += "\n\t".join("using {name}ReadContext = void *;".format(
 		name=utils.to_pascalcase(x.name))
 		for x in schema.complex_types)
-	out += "\n"
+	out += "\n\t"
 	out += "\n\t".join("using {name}WriteContext = void *;".format(
 		name=utils.to_pascalcase(x.name))
 		for x in schema.complex_types)
@@ -674,7 +674,7 @@ def _gen_load_required_attrs(t: UxsdComplex) -> str:
 	out += "}\n"
 
 	optional_mask = "".join(["1" if x.optional else "0" for x in t.attrs][::-1])
-	out += "std::bitset<{num_state_bits}> test_gstate = gstate | std::bitset<{num_state_bits}>(0b{optional_mask});\n".format(  # noqa: E501
+	out += "std::bitset<{num_state_bits}> test_astate = astate | std::bitset<{num_state_bits}>(0b{optional_mask});\n".format(  # noqa: E501
 		num_state_bits=len(t.attrs),
 		optional_mask=optional_mask)
 	out += "if(!test_astate.all()) attr_error(test_astate, atok_lookup_{type}, report_error);\n".format(  # noqa: E501

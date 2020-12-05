@@ -11,7 +11,7 @@ public:
 	std::string greeting;
 	std::vector<std::string> names;
 
-	HelloSerializer(){}
+	~HelloSerializer(){}
 	void start_load(const std::function<void(const char*)> *report_error){}
 	void finish_load(){}
 	void start_write(){}
@@ -75,6 +75,7 @@ int main(int argc, char **argv){
 	uxsd::write_hello_xml(hello1, context, os);
 	os.close();
 
+	/* Compare memory representations. */
 	assert(hello0.greeting == hello1.greeting);
 	for(size_t i=0; i<hello0.names.size(); i++){
 		assert(hello0.names[i] == hello1.names[i]);

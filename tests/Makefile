@@ -1,4 +1,4 @@
-TESTS := hello
+TESTS := hello catalog
 CFLAGS := -O0 -g -I pugixml/src/ --std=c++11
 
 all: $(TESTS) coverage_badge

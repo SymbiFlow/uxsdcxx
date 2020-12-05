@@ -1,3 +1,6 @@
 [submodule "tests/pugixml"]
 	path = tests/pugixml
 	url = https://github.com/zeux/pugixml
+[submodule "tests/capnproto"]
+	path = tests/capnproto
+	url = https://github.com/capnproto/capnproto/
